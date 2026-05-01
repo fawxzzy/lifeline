@@ -30,6 +30,7 @@ Why this order matters:
 - Managed app output is appended under `.lifeline/logs/<app-name>.log`.
 - Each `lifeline up` cycle starts with a header line in the log file.
 - `lifeline logs <app-name> [line-count]` tails the log file, with `100` lines as the default.
+- When Wave 1 release state exists, `lifeline logs` prints the current and previous release ids before the tailed log lines so incident notes stay bound to a concrete release lineage.
 - Log output is line-oriented and stable enough for operators to grep, tail, and attach to incident notes.
 
 Useful signals:
@@ -43,6 +44,7 @@ Useful signals:
 - `lifeline status <app-name>` is the primary health visibility command.
 - Healthy state requires the supervisor, the managed child process, port ownership, and a successful health check.
 - The status output always reports the local healthcheck URL, last known status, log path, manifest path, restart policy, and crash-loop state.
+- When Wave 1 release state exists, `lifeline status` also reports the current release id, previous release id, current artifact ref, rollback target, and recent release receipts.
 - `lifeline status <app-name> --proof-text` gives a compact operator brief.
 - `lifeline status <app-name> --proof-gate` makes the proof brief fail closed.
 
@@ -50,6 +52,8 @@ Useful signals:
 
 - `App <name> is running.` means the pilot can proceed.
 - `- health: ok (200)` means the managed app is answering the healthcheck.
+- `- currentReleaseId:` and `- previousReleaseId:` identify the live and rollback-adjacent release lineage.
+- `- rollbackTarget.releaseId:` and `- receipt:` lines show the concrete rollback target and recent release receipts.
 - `blockedReason` or `- health: managed app process not running` means cutover should stop.
 
 ## Receipt contract
