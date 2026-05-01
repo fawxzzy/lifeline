@@ -17,7 +17,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "verify": "pnpm typecheck && pnpm build && pnpm test:wave1-deploy-contract && pnpm test:wave1-release-mechanics && pnpm test:privileged-execution-bridge && pnpm test:privileged-execution-repair && pnpm test:ui-proof-receipt",
+    "verify": "pnpm typecheck && pnpm build && pnpm test:wave1-deploy-contract && pnpm test:wave1-release-mechanics && pnpm test:wave1-operator-evidence && pnpm test:privileged-execution-bridge && pnpm test:privileged-execution-repair && pnpm test:ui-proof-receipt",
     "check": "biome check .",
     "format": "biome format --write .",
     "validate:fitness": "node dist/cli.js validate examples/fitness-app.lifeline.yml",
@@ -63,6 +63,7 @@
     "smoke:runtime:restore-missing-env-file": "node scripts/smoke-runtime-restore-missing-env-file.mjs",
     "test:wave1-deploy-contract": "node tests/contracts/test-wave1-deploy-contract-deterministic.mjs",
     "test:wave1-release-mechanics": "node scripts/test-wave1-release-mechanics-deterministic.mjs",
+    "test:wave1-operator-evidence": "node scripts/test-wave1-operator-evidence-deterministic.mjs",
     "test:startup-deterministic": "node scripts/test-wave2-startup-deterministic.mjs",
     "test:startup-roundtrip": "node scripts/test-startup-roundtrip-windows-deterministic.mjs",
     "test:privileged-execution-bridge": "node scripts/test-privileged-execution-worker-bridge-deterministic.mjs",

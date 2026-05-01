@@ -2,6 +2,7 @@ import {
   findListeningPortOwnerPid,
   isProcessAlive,
 } from "../core/process-manager.js";
+import { readReleaseOperatorEvidence } from "../core/release-state.js";
 import { checkHealth } from "../core/healthcheck.js";
 import { getAppState, upsertAppState } from "../core/state-store.js";
 
@@ -26,6 +27,7 @@ type RuntimeSnapshot = {
     error?: string;
     status?: number;
   };
+  release?: Awaited<ReturnType<typeof readReleaseOperatorEvidence>>;
 };
 
 type ProofState = "ready" | "blocked" | "conflicted" | "not-ready";
@@ -106,8 +108,62 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
       error?: string;
     };
   };
+  release?: {
+    current_release_id?: string;
+    current_artifact_ref?: string;
+    previous_release_id?: string;
+    rollback_target?: {
+      release_id: string;
+      artifact_ref: string;
+      strategy: string;
+      note?: string;
+    };
+    receipts_dir: string;
+    latest_receipts: Array<{
+      receipt_id: string;
+      action: string;
+      status: string;
+      release_id: string;
+      path: string;
+    }>;
+  };
 } {
   const proof = deriveProof(snapshot);
+  const release = snapshot.release
+    ? {
+        ...(snapshot.release.current
+          ? {
+              current_release_id: snapshot.release.current.releaseId,
+              ...(snapshot.release.current.artifactRef
+                ? { current_artifact_ref: snapshot.release.current.artifactRef }
+                : {}),
+            }
+          : {}),
+        ...(snapshot.release.previous
+          ? { previous_release_id: snapshot.release.previous.releaseId }
+          : {}),
+        ...(snapshot.release.rollbackTarget
+          ? {
+              rollback_target: {
+                release_id: snapshot.release.rollbackTarget.releaseId,
+                artifact_ref: snapshot.release.rollbackTarget.artifactRef,
+                strategy: snapshot.release.rollbackTarget.strategy,
+                ...(snapshot.release.rollbackTarget.note
+                  ? { note: snapshot.release.rollbackTarget.note }
+                  : {}),
+              },
+            }
+          : {}),
+        receipts_dir: snapshot.release.receiptsDir,
+        latest_receipts: snapshot.release.latestReceipts.map((receipt) => ({
+          receipt_id: receipt.receiptId,
+          action: receipt.action,
+          status: receipt.status,
+          release_id: receipt.releaseId,
+          path: receipt.path,
+        })),
+      }
+    : undefined;
 
   return {
     mode: "proof",
@@ -128,6 +184,7 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
         ...(snapshot.health.error ? { error: snapshot.health.error } : {}),
       },
     },
+    ...(release ? { release } : {}),
   };
 }
 
@@ -157,6 +214,17 @@ function printProofText(payload: ReturnType<typeof serializeProofPayload>): void
   console.log(
     `- health: ${payload.runtime.health.ok ? `ok (${payload.runtime.health.status ?? 200})` : (payload.runtime.health.error ?? "failed")}`,
   );
+  if (payload.release?.current_release_id) {
+    console.log(`- currentReleaseId: ${payload.release.current_release_id}`);
+  }
+  if (payload.release?.previous_release_id) {
+    console.log(`- previousReleaseId: ${payload.release.previous_release_id}`);
+  }
+  if (payload.release?.rollback_target) {
+    console.log(
+      `- rollbackTarget: ${payload.release.rollback_target.release_id} (${payload.release.rollback_target.strategy})`,
+    );
+  }
 }
 
 function resolveProofExitCode(
@@ -235,6 +303,7 @@ export async function runStatusCommand(
 
   state.portOwnerPid = portOwnerPid;
   await upsertAppState(state);
+  const releaseEvidence = await readReleaseOperatorEvidence(appName);
 
   const runtimeSnapshot: RuntimeSnapshot = {
     appName,
@@ -246,6 +315,7 @@ export async function runStatusCommand(
     inferredManagedPid,
     portOwnerPid,
     health,
+    release: releaseEvidence,
   };
 
   if (options.mode === "proof-json" || options.mode === "proof-text") {
@@ -282,6 +352,40 @@ export async function runStatusCommand(
   console.log(`- manifest: ${state.manifestPath}`);
   if (state.playbookPath) {
     console.log(`- playbook: ${state.playbookPath}`);
+  }
+  if (releaseEvidence?.current) {
+    console.log(`- currentReleaseId: ${releaseEvidence.current.releaseId}`);
+    if (releaseEvidence.current.artifactRef) {
+      console.log(`- currentArtifactRef: ${releaseEvidence.current.artifactRef}`);
+    }
+    if (releaseEvidence.current.metadataPath) {
+      console.log(`- releaseMetadata: ${releaseEvidence.current.metadataPath}`);
+    }
+  }
+  if (releaseEvidence?.previous) {
+    console.log(`- previousReleaseId: ${releaseEvidence.previous.releaseId}`);
+    if (releaseEvidence.previous.artifactRef) {
+      console.log(`- previousArtifactRef: ${releaseEvidence.previous.artifactRef}`);
+    }
+  }
+  if (releaseEvidence?.rollbackTarget) {
+    console.log(
+      `- rollbackTarget.releaseId: ${releaseEvidence.rollbackTarget.releaseId}`,
+    );
+    console.log(
+      `- rollbackTarget.artifactRef: ${releaseEvidence.rollbackTarget.artifactRef}`,
+    );
+    console.log(
+      `- rollbackTarget.strategy: ${releaseEvidence.rollbackTarget.strategy}`,
+    );
+  }
+  if (releaseEvidence?.latestReceipts.length) {
+    console.log(`- receiptsDir: ${releaseEvidence.receiptsDir}`);
+    for (const receipt of releaseEvidence.latestReceipts) {
+      console.log(
+        `- receipt: ${receipt.action} ${receipt.status} ${receipt.releaseId} (${receipt.path})`,
+      );
+    }
   }
   console.log(`- restartPolicy: ${state.restartPolicy}`);
   console.log(`- restartCount: ${state.restartCount}`);
