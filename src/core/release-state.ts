@@ -36,6 +36,8 @@ export interface ReleaseOperatorEvidence {
   previous?: ReleaseRecord;
   rollbackTarget?: ReleaseRollbackTarget;
   receiptsDir: string;
+  rollbackReady: boolean;
+  latestRollbackReceipt?: ReleaseReceiptSummary;
   latestReceipts: ReleaseReceiptSummary[];
 }
 
@@ -220,6 +222,9 @@ export async function readReleaseOperatorEvidence(
     ? await readReleaseMetadata(path.join(resolvedRoot, current.metadataPath))
     : undefined;
   const latestReceipts = await readLatestReceipts(resolvedRoot, receiptsDir);
+  const latestRollbackReceipt = latestReceipts.find(
+    (receipt) => receipt.action === "rollback",
+  );
 
   if (!current && !previous && latestReceipts.length === 0) {
     return undefined;
@@ -231,7 +236,11 @@ export async function readReleaseOperatorEvidence(
     ...(currentMetadata?.rollbackTarget
       ? { rollbackTarget: currentMetadata.rollbackTarget }
       : {}),
+    rollbackReady: Boolean(
+      current && previous && currentMetadata?.rollbackTarget,
+    ),
     receiptsDir: normalizeRelativePath(resolvedRoot, receiptsDir),
+    ...(latestRollbackReceipt ? { latestRollbackReceipt } : {}),
     latestReceipts,
   };
 }
