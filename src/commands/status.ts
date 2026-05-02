@@ -118,6 +118,14 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
       strategy: string;
       note?: string;
     };
+    rollback_ready: boolean;
+    latest_rollback_receipt?: {
+      receipt_id: string;
+      action: string;
+      status: string;
+      release_id: string;
+      path: string;
+    };
     receipts_dir: string;
     latest_receipts: Array<{
       receipt_id: string;
@@ -154,6 +162,7 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
               },
             }
           : {}),
+        rollback_ready: snapshot.release.rollbackReady,
         receipts_dir: snapshot.release.receiptsDir,
         latest_receipts: snapshot.release.latestReceipts.map((receipt) => ({
           receipt_id: receipt.receiptId,
@@ -162,6 +171,17 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
           release_id: receipt.releaseId,
           path: receipt.path,
         })),
+        ...(snapshot.release.latestRollbackReceipt
+          ? {
+              latest_rollback_receipt: {
+                receipt_id: snapshot.release.latestRollbackReceipt.receiptId,
+                action: snapshot.release.latestRollbackReceipt.action,
+                status: snapshot.release.latestRollbackReceipt.status,
+                release_id: snapshot.release.latestRollbackReceipt.releaseId,
+                path: snapshot.release.latestRollbackReceipt.path,
+              },
+            }
+          : {}),
       }
     : undefined;
 
@@ -223,6 +243,15 @@ function printProofText(payload: ReturnType<typeof serializeProofPayload>): void
   if (payload.release?.rollback_target) {
     console.log(
       `- rollbackTarget: ${payload.release.rollback_target.release_id} (${payload.release.rollback_target.strategy})`,
+    );
+  }
+  if (payload.release) {
+    console.log(`- rollbackReady: ${payload.release.rollback_ready ? "yes" : "no"}`);
+  }
+  if (payload.release?.latest_rollback_receipt) {
+    const receipt = payload.release.latest_rollback_receipt;
+    console.log(
+      `- latestRollbackReceipt: ${receipt.action} ${receipt.status} ${receipt.release_id} (${receipt.path})`,
     );
   }
 }
@@ -377,6 +406,14 @@ export async function runStatusCommand(
     );
     console.log(
       `- rollbackTarget.strategy: ${releaseEvidence.rollbackTarget.strategy}`,
+    );
+  }
+  if (releaseEvidence) {
+    console.log(`- rollbackReady: ${releaseEvidence.rollbackReady ? "yes" : "no"}`);
+  }
+  if (releaseEvidence?.latestRollbackReceipt) {
+    console.log(
+      `- latestRollbackReceipt: ${releaseEvidence.latestRollbackReceipt.action} ${releaseEvidence.latestRollbackReceipt.status} ${releaseEvidence.latestRollbackReceipt.releaseId} (${releaseEvidence.latestRollbackReceipt.path})`,
     );
   }
   if (releaseEvidence?.latestReceipts.length) {

@@ -7,7 +7,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { persistWave1Release, activateWave1Release } from "../control-plane/wave1-release-engine.mjs";
+import {
+  activateWave1Release,
+  persistWave1Release,
+  rollbackWave1Release,
+} from "../control-plane/wave1-release-engine.mjs";
 import { ensureBuilt } from "./lib/ensure-built.mjs";
 
 await ensureBuilt();
@@ -203,6 +207,14 @@ try {
     receiptAt: "2026-04-26T00:03:00.000Z",
     checkHealth: async () => ({ ok: true, status: 200 }),
   });
+  await rollbackWave1Release(tempWorkspace, appName, {
+    receiptAt: "2026-04-26T00:04:00.000Z",
+    checkHealth: async () => ({ ok: true, status: 200 }),
+  });
+  await activateWave1Release(tempWorkspace, appName, releaseB.releaseId, {
+    receiptAt: "2026-04-26T00:05:00.000Z",
+    checkHealth: async () => ({ ok: true, status: 200 }),
+  });
 
   const statusResult = await runCli(["status", appName], {
     cwd: tempWorkspace,
@@ -219,6 +231,8 @@ try {
   assertIncludes(statusResult.stdout, "- rollbackTarget.releaseId: release-runtime-smoke-app-a", "status: missing rollback release id");
   assertIncludes(statusResult.stdout, "- rollbackTarget.artifactRef: docker://runtime-smoke-app:release-a", "status: missing rollback artifact ref");
   assertIncludes(statusResult.stdout, "- rollbackTarget.strategy: restore", "status: missing rollback strategy");
+  assertIncludes(statusResult.stdout, "- rollbackReady: yes", "status: missing rollback readiness");
+  assertIncludes(statusResult.stdout, "- latestRollbackReceipt: rollback succeeded release-runtime-smoke-app-a", "status: missing rollback rehearsal receipt");
   assertIncludes(statusResult.stdout, "- receiptsDir: .lifeline/releases/runtime-smoke-app/receipts", "status: missing receipts dir");
   assertIncludes(statusResult.stdout, "- receipt: activate succeeded release-runtime-smoke-app-b", "status: missing receipt summary");
 
@@ -234,6 +248,8 @@ try {
   assertIncludes(proofResult.stdout, "- currentReleaseId: release-runtime-smoke-app-b", "proof-text: missing current release id");
   assertIncludes(proofResult.stdout, "- previousReleaseId: release-runtime-smoke-app-a", "proof-text: missing previous release id");
   assertIncludes(proofResult.stdout, "- rollbackTarget: release-runtime-smoke-app-a (restore)", "proof-text: missing rollback target");
+  assertIncludes(proofResult.stdout, "- rollbackReady: yes", "proof-text: missing rollback readiness");
+  assertIncludes(proofResult.stdout, "- latestRollbackReceipt: rollback succeeded release-runtime-smoke-app-a", "proof-text: missing rollback rehearsal receipt");
 
   const logsResult = await runCli(["logs", appName, "20"], {
     cwd: tempWorkspace,
