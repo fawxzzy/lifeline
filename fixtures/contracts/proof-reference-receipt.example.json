@@ -1,0 +1,50 @@
+{
+  "contract_version": "atlas.lifeline.proof-reference.receipt.v1",
+  "receipt_id": "sha256:proof-reference-accepted-f11",
+  "emitted_at": "2026-04-28T18:42:00.000Z",
+  "runner_version": "lifeline.proof-reference-receipt.v1",
+  "status": "proof_reference_accepted",
+  "source_repo_id": "fitness",
+  "tranche_id": "F11",
+  "source_artifacts": {
+    "proof_reference_pack_ref": "runtime/cortex/proof-reference-packs/runs/cortex-run-result.latest.json",
+    "proof_reference_pack_digest": "sha256:proof-reference-pack-digest",
+    "write_ready_artifact_ref": "runtime/cortex/lifeline-write-ready/runs/cortex-run-result.latest.json"
+  },
+  "approval": {
+    "explicit_human_approval": true,
+    "auto_approved": false,
+    "approved_at": "2026-04-28T18:41:00.000Z",
+    "reviewer_label": "Lane R reviewer",
+    "approval_note": "Explicit human approval recorded after reviewing the proof-reference pack and Lifeline contract."
+  },
+  "boundary": {
+    "final_receipt_owner": "lifeline",
+    "prepared_by": "cortex",
+    "statement": "Cortex prepared the proof-reference pack and write-ready artifact, but Lifeline owns final receipt truth and writes the final receipt only after explicit human approval."
+  },
+  "proof_summary": {
+    "owner_repo_id": "fitness",
+    "summary_ref": "runtime/atlas/ui-proof/fitness/latest.json",
+    "report_id": "sha256:proof-summary-clean"
+  },
+  "proof_refs": {
+    "semantic_report_ref": "runtime/atlas/ui-observe/drift/fitness/latest.json",
+    "semantic_report_id": "sha256:semantic-proof-clean",
+    "visual_report_ref": "runtime/atlas/ui-visual-proof/fitness/latest.json",
+    "visual_report_id": "sha256:visual-proof-clean"
+  },
+  "source_refs": [
+    "runtime/cortex/proof-reference-packs/runs/cortex-run-result.latest.json",
+    "runtime/cortex/lifeline-write-ready/runs/cortex-run-result.latest.json",
+    "runtime/atlas/ui-proof/fitness/latest.json",
+    "runtime/atlas/ui-observe/drift/fitness/latest.json",
+    "runtime/atlas/ui-visual-proof/fitness/latest.json"
+  ],
+  "validation_context": {
+    "known_ambient_debt": [
+      "critical=345, error=14, warning=181"
+    ],
+    "current_validation_debt": []
+  }
+}

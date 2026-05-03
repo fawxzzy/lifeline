@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fawxzzy.dev/schemas/lifeline/proof-reference-receipt.schema.json",
+  "title": "Lifeline Proof Reference Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "receipt_id",
+    "emitted_at",
+    "runner_version",
+    "status",
+    "source_repo_id",
+    "tranche_id",
+    "source_artifacts",
+    "approval",
+    "boundary",
+    "proof_summary",
+    "proof_refs",
+    "source_refs",
+    "validation_context"
+  ],
+  "properties": {
+    "contract_version": {
+      "const": "atlas.lifeline.proof-reference.receipt.v1"
+    },
+    "receipt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "emitted_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runner_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "const": "proof_reference_accepted"
+    },
+    "source_repo_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tranche_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proof_reference_pack_ref",
+        "proof_reference_pack_digest",
+        "write_ready_artifact_ref"
+      ],
+      "properties": {
+        "proof_reference_pack_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proof_reference_pack_digest": {
+          "type": "string",
+          "minLength": 1
+        },
+        "write_ready_artifact_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "reviewer_id"
+          ]
+        },
+        {
+          "required": [
+            "reviewer_label"
+          ]
+        }
+      ],
+      "required": [
+        "explicit_human_approval",
+        "auto_approved",
+        "approved_at",
+        "approval_note"
+      ],
+      "properties": {
+        "explicit_human_approval": {
+          "const": true
+        },
+        "auto_approved": {
+          "const": false
+        },
+        "approved_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approval_note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewer_label": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "final_receipt_owner",
+        "prepared_by",
+        "statement"
+      ],
+      "properties": {
+        "final_receipt_owner": {
+          "const": "lifeline"
+        },
+        "prepared_by": {
+          "const": "cortex"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "proof_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_repo_id",
+        "summary_ref",
+        "report_id"
+      ],
+      "properties": {
+        "owner_repo_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "report_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "proof_refs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_report_ref",
+        "visual_report_ref"
+      ],
+      "properties": {
+        "semantic_report_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "semantic_report_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visual_report_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visual_report_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "validation_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "known_ambient_debt",
+        "current_validation_debt"
+      ],
+      "properties": {
+        "known_ambient_debt": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "current_validation_debt": {
+          "type": "array",
+          "maxItems": 0,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
