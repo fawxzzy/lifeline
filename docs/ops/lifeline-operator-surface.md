@@ -10,6 +10,7 @@ Run the operator flow in this order:
 2. `pnpm lifeline validate <manifest> [--playbook-path <path>]`
 3. runtime action (`up`, `restart`, `status`, or `execute`)
 4. receipt step (`execute` receipt or `proof-pass` receipt)
+5. release step when the concrete release target must move (`release plan`, `release persist`, `release activate`, `release rollback`)
 
 Why this order matters:
 
@@ -64,6 +65,14 @@ Useful signals:
 - `lifeline proof-pass` writes a deterministic `proof_passed` receipt only when the referenced ATLAS proof summary is clean and `completion_ready=true`.
 - Receipt failures print a failure category plus the first remediation step so the operator can stop on the real root cause.
 - Path-like refs are normalized before write so receipts stay diffable across Windows and POSIX environments.
+
+## Release contract
+
+- `lifeline release plan <deploy-manifest>` previews the deterministic release id and local `.lifeline/releases/<app>/...` layout without writing state.
+- `lifeline release persist <deploy-manifest>` writes immutable release metadata and a planned receipt.
+- `lifeline release activate <app-name> <release-id>` advances the current release pointer to one persisted release id.
+- `lifeline release rollback <app-name>` promotes the previous known-good release back to current.
+- This lane is local-first and bounded. It does not imply preview hosts, domain automation, TLS automation, or hosted control-plane behavior.
 
 ## Smoke-check path
 

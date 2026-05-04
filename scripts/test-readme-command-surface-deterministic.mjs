@@ -153,6 +153,7 @@ async function main() {
     'restart',
     'restore',
     'startup',
+    'release',
     'execute',
     'proof-pass',
     'down',
