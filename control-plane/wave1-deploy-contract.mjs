@@ -7,7 +7,14 @@ export const WAVE1_DRY_RUN_PLAN_VERSION = "atlas.lifeline.deploy-dry-run.v1";
 export const WAVE1_RELEASE_PLAN_VERSION = "atlas.lifeline.release-plan.v1";
 
 export const SUPPORTED_ROLLBACK_STRATEGIES = ["redeploy", "restore"];
-export const SUPPORTED_HOOK_NAMES = ["preDeploy", "postDeploy", "rollback"];
+export const SUPPORTED_HOOK_NAMES = [
+  "preDeploy",
+  "postDeploy",
+  "rollback",
+  "preActivate",
+  "postActivate",
+  "preRollback",
+];
 export const SUPPORTED_SOURCE_ADAPTER_KINDS = [
   "artifactRef",
   "imageRef",
@@ -107,6 +114,9 @@ function validateHooks(hooks, issues) {
     preDeploy: [],
     postDeploy: [],
     rollback: [],
+    preActivate: [],
+    postActivate: [],
+    preRollback: [],
   };
 
   for (const hookName of SUPPORTED_HOOK_NAMES) {

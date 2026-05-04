@@ -70,8 +70,9 @@ Useful signals:
 
 - `lifeline release plan <deploy-manifest>` previews the deterministic release id and local `.lifeline/releases/<app>/...` layout without writing state.
 - `lifeline release persist <deploy-manifest>` writes immutable release metadata and a planned receipt.
-- `lifeline release activate <app-name> <release-id>` advances the current release pointer to one persisted release id.
-- `lifeline release rollback <app-name>` promotes the previous known-good release back to current.
+- `lifeline release activate <app-name> <release-id>` runs `preActivate`, performs the health gate, advances the current release pointer, and then runs `postActivate`.
+- `lifeline release rollback <app-name>` runs `preRollback`, performs the rollback health gate, and then promotes the previous known-good release back to current.
+- Release phase receipts record the phase evidence that ran, and failed phase work preserves the existing pointers.
 - This lane is local-first and bounded. It does not imply preview hosts, domain automation, TLS automation, or hosted control-plane behavior.
 
 ## Smoke-check path

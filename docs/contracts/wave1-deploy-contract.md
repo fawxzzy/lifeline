@@ -22,6 +22,9 @@ The deploy manifest is a JSON object with:
 - `migrationHooks.preDeploy`
 - `migrationHooks.postDeploy`
 - `migrationHooks.rollback`
+- `migrationHooks.preActivate`
+- `migrationHooks.postActivate`
+- `migrationHooks.preRollback`
 - `rollbackTarget.releaseId`
 - `rollbackTarget.artifactRef`
 - `rollbackTarget.strategy`
@@ -47,6 +50,8 @@ When the input arrived as `imageRef` or `repo` + `branch`, Lifeline preserves th
 
 The persisted metadata stays JSON only, with no hosted control-plane state embedded.
 
+Phase hook arrays stay as command strings. Lifeline does not invent a new hook DSL for Wave 1.
+
 ## Dry-run path
 
 The dry-run path is a pure planning path:
@@ -69,9 +74,16 @@ Wave 1 release execution is local-first and single-host:
 - activation is health-gated before the current pointer advances
 - failed health gates preserve the existing current and previous release pointers
 - rollback promotes the previous known-good release back to current
+- activation runs `preActivate` before the health gate and before any pointer mutation
+- activation runs `postActivate` only after a provisional activation has succeeded
+- rollback runs `preRollback` before the rollback health gate and before any pointer mutation
+- failed pre-activation or pre-rollback work preserves the existing pointers
+- failed post-activation work restores the original pointers before the failure receipt is written
 - plan, activation, failed activation, and rollback each emit a receipt under `.lifeline/releases/<app>/receipts/`
 
 This keeps the durable release target explicit without widening Lifeline into preview URLs, hosted control-plane behavior, domains, or TLS management.
+
+Phase evidence is recorded in the release receipt so operators can see which commands ran and which phase blocked the transition.
 
 ## Schema files
 
