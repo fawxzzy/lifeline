@@ -4,6 +4,7 @@ import { runDoctorCommand } from "./commands/doctor.js";
 import { runExecuteCommand } from "./commands/execute.js";
 import { runLogsCommand } from "./commands/logs.js";
 import { runProofPassCommand } from "./commands/proof-pass.js";
+import { runReleaseCommand } from "./commands/release.js";
 import { runResolveCommand } from "./commands/resolve.js";
 import { runRestartCommand } from "./commands/restart.js";
 import { runRestoreCommand } from "./commands/restore.js";
@@ -16,7 +17,7 @@ import { runSupervisor } from "./core/supervisor.js";
 
 function printUsage(): void {
   console.log(
-    "Lifeline v1 + Wave 2 startup and execution contracts\n\nUsage:\n  lifeline doctor\n  lifeline validate <manifest-path> [--playbook-path <path>]\n  lifeline resolve <manifest-path> [--playbook-path <path>]\n  lifeline up <manifest-path> [--playbook-path <path>]\n  lifeline down <app-name>\n  lifeline status <app-name> [--proof|--proof-text] [--proof-gate]\n  lifeline logs <app-name> [line-count]\n  lifeline restart <app-name> [--playbook-path <path>]\n  lifeline restore\n  lifeline startup <enable|disable|status> [--dry-run]\n  lifeline execute <request-path> --capability-profile <path> --approval-receipt <path> [--receipt-dir <path>]\n  lifeline proof-pass <proof-summary-path> --source-repo <id> --tranche <id> [--receipt-dir <path>]",
+    "Lifeline v1 + Wave 2 startup and execution contracts\n\nUsage:\n  lifeline doctor\n  lifeline validate <manifest-path> [--playbook-path <path>]\n  lifeline resolve <manifest-path> [--playbook-path <path>]\n  lifeline up <manifest-path> [--playbook-path <path>]\n  lifeline down <app-name>\n  lifeline status <app-name> [--proof|--proof-text] [--proof-gate]\n  lifeline logs <app-name> [line-count]\n  lifeline restart <app-name> [--playbook-path <path>]\n  lifeline restore\n  lifeline startup <enable|disable|status> [--dry-run]\n  lifeline release <plan|persist> <deploy-manifest>\n  lifeline release activate <app-name> <release-id>\n  lifeline release rollback <app-name>\n  lifeline execute <request-path> --capability-profile <path> --approval-receipt <path> [--receipt-dir <path>]\n  lifeline proof-pass <proof-summary-path> --source-repo <id> --tranche <id> [--receipt-dir <path>]",
   );
 }
 
@@ -158,6 +159,8 @@ async function main(argv: string[]): Promise<number> {
       return runRestoreCommand();
     case "startup":
       return runStartupCommand(target, option);
+    case "release":
+      return runReleaseCommand(rest);
     case "execute":
       return runExecuteCommand(rest);
     case "proof-pass":

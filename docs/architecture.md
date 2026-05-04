@@ -47,6 +47,7 @@ The CLI is the operator-facing entrypoint. Current commands:
 - `restart`
 - `restore`
 - `startup` (merged Wave 2 backend seam with registered platform installers)
+- `release`
 - `execute`
 - `proof-pass`
 
@@ -79,6 +80,15 @@ Wave 1 release planning and activation stay local-first:
 - plan, activation, failed activation, and rollback each emit receipts keyed to concrete release ids
 
 This is the first execution slice that replaces "deploy a branch" with "deploy a concrete release target" without introducing hosted control-plane behavior.
+
+The operator-facing release CLI stays narrow:
+
+- `lifeline release plan <deploy-manifest>`
+- `lifeline release persist <deploy-manifest>`
+- `lifeline release activate <app-name> <release-id>`
+- `lifeline release rollback <app-name>`
+
+This surface is intentionally local-only. It does not add domain automation, TLS automation, preview-host assumptions, hosted control-plane behavior, or app-specific special casing.
 
 ## 7. Receipt-backed execution and proof surfaces
 

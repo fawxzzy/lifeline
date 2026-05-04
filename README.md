@@ -45,6 +45,7 @@ Lifeline provides a boring, low-maintenance way to describe how an app should be
 - A home for a small, explicit app manifest contract.
 - A file-based config resolver that can optionally read Playbook archetype exports from a local checkout.
 - A runtime slice that can `resolve`, `up`, `down`, `status`, `logs`, `restart`, `restore`, `startup`, and `validate` one app on one machine.
+- A local-first Wave 1 release surface that can `release plan`, `release persist`, `release activate`, and `release rollback` against the existing deploy manifest contract.
 - A narrow capability-backed execution surface that can `execute` read-only inspections and dry-run commands with receipts.
 - A narrow proof-backed receipt surface that can emit auditable `proof_passed` receipts from ATLAS UI proof summaries.
 - Fixture-based smoke paths that verify manifest-only runtime behavior and Playbook-backed resolution without depending on an external Playbook repo.
@@ -79,6 +80,10 @@ pnpm lifeline restore
 pnpm lifeline startup status
 pnpm lifeline startup enable
 pnpm lifeline startup disable
+pnpm lifeline release plan control-plane/fixtures/wave1-pilot-deploy.manifest.json
+pnpm lifeline release persist control-plane/fixtures/wave1-pilot-deploy.manifest.json
+pnpm lifeline release activate lifeline-pilot <release-id>
+pnpm lifeline release rollback lifeline-pilot
 pnpm lifeline execute examples/privileged-execution/read-only-scan.request.json \
   --capability-profile examples/privileged-execution/capability-profile.json \
   --approval-receipt examples/privileged-execution/read-only-scan.approval.json
@@ -100,6 +105,7 @@ Use the operator path in this order so environment drift, manifest drift, and re
 2. `pnpm lifeline validate <manifest> [--playbook-path <path>]`
 3. the intended runtime action (`up`, `restart`, `status`, or `execute`)
 4. the auditable receipt step (`execute` writes an execution receipt for every attempt; `proof-pass` writes a deterministic `proof_passed` receipt when the referenced ATLAS summary is clean and `completion_ready=true`)
+5. when release state must move, use the bounded release lane (`release plan`, `release persist`, `release activate`, `release rollback`) against the existing deploy manifest contract
 
 - Rule: validation must execute through the same CLI boundary operators use for real runtime-facing work.
 - Pattern: run the shared preflight first, validate through the canonical CLI boundary second, then emit deterministic receipts with an explicit first remediation step when receipt emission is blocked.
@@ -159,6 +165,10 @@ Playbook archetype exports are sparse optional default bundles. They may omit an
 - The runtime `port` requirement can come from either Playbook defaults or explicit manifest values.
 - `lifeline resolve <manifest>` prints the fully resolved config that Lifeline would execute.
 - `lifeline up` and `lifeline restart` use the same resolution path as `resolve`.
+- `lifeline release plan <deploy-manifest>` previews the normalized release metadata, deterministic release id, and local `.lifeline/releases/<app>/...` layout without writing state.
+- `lifeline release persist <deploy-manifest>` writes immutable release metadata plus a planned receipt under `.lifeline/releases/<app>/receipts/`.
+- `lifeline release activate <app> <release-id>` promotes one persisted release id to current and records activation lineage locally.
+- `lifeline release rollback <app>` promotes the previous known-good release back to current and emits a rollback receipt.
 - The standalone `scripts/validate-fitness-mirror.mjs` helper delegates to `lifeline validate` so mirror validation uses the same CLI boundary as normal runtime-facing validation paths instead of importing temp-transpiled outputs.
 - If an app was started with Playbook defaults, Lifeline stores the resolved Playbook path in `.lifeline/state.json` so `restart` remains deterministic without retyping flags.
 
