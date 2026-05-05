@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 
 import {
   buildWave1ReleaseMetadata,
@@ -19,6 +20,7 @@ function createManifest({
   artifactRef,
   rollbackReleaseId,
   rollbackArtifactRef,
+  migrationHooks,
 }) {
   return {
     contractVersion: "atlas.lifeline.deploy-contract.v1",
@@ -34,6 +36,7 @@ function createManifest({
       preDeploy: ["pnpm verify"],
       postDeploy: ["pnpm smoke:release"],
       rollback: ["pnpm rollback:release"],
+      ...(migrationHooks ?? {}),
     },
     rollbackTarget: {
       releaseId: rollbackReleaseId,
@@ -54,6 +57,45 @@ async function pathExists(filePath) {
   } catch {
     return false;
   }
+}
+
+function quoteShellArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+function buildHookCommand(scriptPath, phase, mode, logPath) {
+  return [
+    process.execPath,
+    scriptPath,
+    phase,
+    mode,
+    logPath,
+  ]
+    .map(quoteShellArg)
+    .join(" ");
+}
+
+async function writeHookRunner(scriptPath) {
+  await writeFile(
+    scriptPath,
+    [
+      "import { appendFile } from 'node:fs/promises';",
+      "const [phase, mode, logPath] = process.argv.slice(2);",
+      "await appendFile(logPath, `${phase}\\n`, 'utf8');",
+      "if (mode === 'fail') {",
+      "  process.exit(1);",
+      "}",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+async function readHookLogLines(logPath) {
+  const contents = await readFile(logPath, "utf8");
+  return contents
+    .trim()
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0);
 }
 
 async function writeLegacyReleaseMetadata(rootDir, manifest, options) {
@@ -93,6 +135,33 @@ const tempRoot = await mkdtemp(
 try {
   const appName = "lifeline-pilot";
   const outsidePath = path.join(tempRoot, ".lifeline", "outside");
+  const hookRunnerPath = path.join(tempRoot, "hook-runner.mjs");
+  const hookLogPath = path.join(tempRoot, "hook-log.txt");
+  await writeHookRunner(hookRunnerPath);
+
+  const successHooks = {
+    preActivate: [
+      buildHookCommand(hookRunnerPath, "preActivate", "success", hookLogPath),
+    ],
+    postActivate: [
+      buildHookCommand(hookRunnerPath, "postActivate", "success", hookLogPath),
+    ],
+    preRollback: [
+      buildHookCommand(hookRunnerPath, "preRollback", "success", hookLogPath),
+    ],
+  };
+  const failingPreActivateHooks = {
+    ...successHooks,
+    preActivate: [
+      buildHookCommand(hookRunnerPath, "preActivate", "fail", hookLogPath),
+    ],
+  };
+  const failingPreRollbackHooks = {
+    ...successHooks,
+    preRollback: [
+      buildHookCommand(hookRunnerPath, "preRollback", "fail", hookLogPath),
+    ],
+  };
 
   const releaseA = await persistWave1Release(
     createManifest({
@@ -101,6 +170,7 @@ try {
       rollbackReleaseId: "bootstrap-release",
       rollbackArtifactRef:
         "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      migrationHooks: successHooks,
     }),
     {
       rootDir: tempRoot,
@@ -123,13 +193,14 @@ try {
 
   await assert.rejects(
     persistWave1Release(
-      createManifest({
-        appName,
-        artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        rollbackReleaseId: "bootstrap-release",
-        rollbackArtifactRef:
-          "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-      }),
+    createManifest({
+      appName,
+      artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      rollbackReleaseId: "bootstrap-release",
+      rollbackArtifactRef:
+        "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      migrationHooks: successHooks,
+    }),
       {
         rootDir: tempRoot,
         releaseId: "../../outside",
@@ -143,13 +214,14 @@ try {
 
   await assert.rejects(
     persistWave1Release(
-      createManifest({
-        appName,
-        artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:1212121212121212121212121212121212121212121212121212121212121212",
-        rollbackReleaseId: "bootstrap-release",
-        rollbackArtifactRef:
-          "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-      }),
+    createManifest({
+      appName,
+      artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:1212121212121212121212121212121212121212121212121212121212121212",
+      rollbackReleaseId: "bootstrap-release",
+      rollbackArtifactRef:
+        "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      migrationHooks: successHooks,
+    }),
       {
         rootDir: tempRoot,
         releaseId: "..\\..\\outside",
@@ -173,6 +245,12 @@ try {
   assert.equal(activationA.ok, true);
   assert.equal(activationA.current.releaseId, releaseA.releaseId);
   assert.equal(activationA.previous, undefined);
+  assert.equal(activationA.receipt.phaseEvidence.preActivate.status, "succeeded");
+  assert.equal(activationA.receipt.phaseEvidence.postActivate.status, "succeeded");
+  assert.deepEqual(await readHookLogLines(hookLogPath), [
+    "preActivate",
+    "postActivate",
+  ]);
 
   const releaseB = await persistWave1Release(
     createManifest({
@@ -180,6 +258,7 @@ try {
       artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       rollbackReleaseId: releaseA.releaseId,
       rollbackArtifactRef: releaseA.releaseMetadata.artifactRef,
+      migrationHooks: successHooks,
     }),
     {
       rootDir: tempRoot,
@@ -200,6 +279,8 @@ try {
   assert.equal(activationB.ok, true);
   assert.equal(activationB.current.releaseId, releaseB.releaseId);
   assert.equal(activationB.previous.releaseId, releaseA.releaseId);
+  assert.equal(activationB.receipt.phaseEvidence.preActivate.status, "succeeded");
+  assert.equal(activationB.receipt.phaseEvidence.postActivate.status, "succeeded");
   assert.equal(
     activationB.receipt.lineage.promotedFromReleaseId,
     releaseA.releaseId,
@@ -209,6 +290,12 @@ try {
     releaseB.releaseId,
   );
   assert.equal(activationB.receipt.health.status, 200);
+  assert.deepEqual(await readHookLogLines(hookLogPath), [
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "postActivate",
+  ]);
 
   const stateAfterSuccess = await readWave1ReleaseState(tempRoot, appName);
   assert.equal(stateAfterSuccess.current.releaseId, releaseB.releaseId);
@@ -220,6 +307,7 @@ try {
       artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       rollbackReleaseId: releaseB.releaseId,
       rollbackArtifactRef: releaseB.releaseMetadata.artifactRef,
+      migrationHooks: failingPreActivateHooks,
     }),
     {
       rootDir: tempRoot,
@@ -245,10 +333,19 @@ try {
   assert.equal(failedActivation.current.releaseId, releaseB.releaseId);
   assert.equal(failedActivation.previous.releaseId, releaseA.releaseId);
   assert.equal(failedActivation.receipt.status, "failed");
+  assert.equal(failedActivation.receipt.failedPhase, "preActivate");
+  assert.equal(failedActivation.receipt.phaseEvidence.preActivate.status, "failed");
   assert.equal(
     failedActivation.receipt.preservedCurrentReleaseId,
     releaseB.releaseId,
   );
+  assert.deepEqual(await readHookLogLines(hookLogPath), [
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "postActivate",
+    "preActivate",
+  ]);
 
   const stateAfterFailedActivation = await readWave1ReleaseState(tempRoot, appName);
   assert.equal(stateAfterFailedActivation.current.releaseId, releaseB.releaseId);
@@ -264,6 +361,15 @@ try {
   assert.equal(rollbackResult.receipt.action, "rollback");
   assert.equal(rollbackResult.receipt.status, "succeeded");
   assert.equal(rollbackResult.receipt.previousReleaseId, releaseB.releaseId);
+  assert.equal(rollbackResult.receipt.phaseEvidence.preRollback.status, "succeeded");
+  assert.deepEqual(await readHookLogLines(hookLogPath), [
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "preRollback",
+  ]);
 
   const finalState = await readWave1ReleaseState(tempRoot, appName);
   assert.equal(finalState.current.releaseId, releaseA.releaseId);
@@ -298,6 +404,7 @@ try {
       artifactRef: legacyArtifactRef,
       rollbackReleaseId: releaseA.releaseId,
       rollbackArtifactRef: releaseA.releaseMetadata.artifactRef,
+      migrationHooks: successHooks,
     }),
     {
       releaseId: legacyReleaseId,
@@ -329,6 +436,7 @@ try {
       artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       rollbackReleaseId: legacyReleaseId,
       rollbackArtifactRef: legacyArtifactRef,
+      migrationHooks: successHooks,
     }),
     {
       rootDir: tempRoot,
@@ -361,6 +469,98 @@ try {
     releaseId: legacyMetadata.releaseId,
     artifactRef: legacyMetadata.artifactRef,
   });
+
+  const rollbackBlockerRelease = await persistWave1Release(
+    createManifest({
+      appName,
+      artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      rollbackReleaseId: legacyReleaseId,
+      rollbackArtifactRef: legacyArtifactRef,
+      migrationHooks: failingPreRollbackHooks,
+    }),
+    {
+      rootDir: tempRoot,
+      releaseId: "release-20260425-0005",
+      createdAt: "2026-04-25T18:55:00.000Z",
+      receiptAt: "2026-04-25T18:55:00.000Z",
+    },
+  );
+  const rollbackBlockerActivation = await activateWave1Release(
+    tempRoot,
+    appName,
+    rollbackBlockerRelease.releaseId,
+    {
+      receiptAt: "2026-04-25T18:56:00.000Z",
+      checkHealth: async () => ({ ok: true, status: 200 }),
+    },
+  );
+  assert.equal(rollbackBlockerActivation.ok, true);
+  assert.equal(rollbackBlockerActivation.current.releaseId, rollbackBlockerRelease.releaseId);
+  assert.equal(rollbackBlockerActivation.previous.releaseId, legacyReleaseId);
+
+  const rollbackTargetRelease = await persistWave1Release(
+    createManifest({
+      appName,
+      artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:abababababababababababababababababababababababababababababababab",
+      rollbackReleaseId: rollbackBlockerRelease.releaseId,
+      rollbackArtifactRef: rollbackBlockerRelease.releaseMetadata.artifactRef,
+      migrationHooks: successHooks,
+    }),
+    {
+      rootDir: tempRoot,
+      releaseId: "release-20260425-0006",
+      createdAt: "2026-04-25T18:57:00.000Z",
+      receiptAt: "2026-04-25T18:57:00.000Z",
+    },
+  );
+  const rollbackTargetActivation = await activateWave1Release(
+    tempRoot,
+    appName,
+    rollbackTargetRelease.releaseId,
+    {
+      receiptAt: "2026-04-25T18:58:00.000Z",
+      checkHealth: async () => ({ ok: true, status: 200 }),
+    },
+  );
+  assert.equal(rollbackTargetActivation.ok, true);
+  assert.equal(rollbackTargetActivation.current.releaseId, rollbackTargetRelease.releaseId);
+  assert.equal(rollbackTargetActivation.previous.releaseId, rollbackBlockerRelease.releaseId);
+
+  const blockedRollback = await rollbackWave1Release(tempRoot, appName, {
+    receiptAt: "2026-04-25T18:59:00.000Z",
+    checkHealth: async () => ({ ok: true, status: 200 }),
+  });
+  assert.equal(blockedRollback.ok, false);
+  assert.equal(blockedRollback.current.releaseId, rollbackTargetRelease.releaseId);
+  assert.equal(blockedRollback.previous.releaseId, rollbackBlockerRelease.releaseId);
+  assert.equal(blockedRollback.receipt.failedPhase, "preRollback");
+  assert.equal(blockedRollback.receipt.phaseEvidence.preRollback.status, "failed");
+  assert.equal(
+    blockedRollback.receipt.preservedCurrentReleaseId,
+    rollbackTargetRelease.releaseId,
+  );
+  assert.equal(
+    blockedRollback.receipt.preservedPreviousReleaseId,
+    rollbackBlockerRelease.releaseId,
+  );
+  assert.deepEqual(await readHookLogLines(hookLogPath), [
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "preRollback",
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "postActivate",
+    "preRollback",
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "postActivate",
+    "preRollback",
+  ]);
 
   console.log("Wave 1 release mechanics deterministic verification passed.");
 } finally {

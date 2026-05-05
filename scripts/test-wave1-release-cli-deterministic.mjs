@@ -22,6 +22,30 @@ function parseJsonOutput(output) {
   return JSON.parse(output);
 }
 
+function quoteShellArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+function buildHookCommand(scriptPath, phase, mode, logPath) {
+  return [
+    process.execPath,
+    scriptPath,
+    phase,
+    mode,
+    logPath,
+  ]
+    .map(quoteShellArg)
+    .join(" ");
+}
+
+async function readLogLines(filePath) {
+  const contents = await readFile(filePath, "utf8");
+  return contents
+    .trim()
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0);
+}
+
 async function runCli(cwd, args) {
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, [cliPath, ...args], {
@@ -44,6 +68,41 @@ await ensureBuilt();
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lifeline-release-cli-"));
 
 try {
+  const hookLogPath = path.join(tempRoot, "hook-log.txt");
+  const hookRunnerPath = path.join(tempRoot, "hook-runner.mjs");
+  await writeFile(
+    hookRunnerPath,
+    [
+      "import { appendFile } from 'node:fs/promises';",
+      "const [phase, mode, logPath] = process.argv.slice(2);",
+      "await appendFile(logPath, `${phase}\\n`, 'utf8');",
+      "if (mode === 'fail') {",
+      "  process.exit(1);",
+      "}",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const manifestSource = JSON.parse(await readFile(fixtureManifestPath, "utf8"));
+  manifestSource.migrationHooks = {
+    ...manifestSource.migrationHooks,
+    preActivate: [
+      buildHookCommand(hookRunnerPath, "preActivate", "success", hookLogPath),
+    ],
+    postActivate: [
+      buildHookCommand(hookRunnerPath, "postActivate", "success", hookLogPath),
+    ],
+    preRollback: [
+      buildHookCommand(hookRunnerPath, "preRollback", "success", hookLogPath),
+    ],
+  };
+  const hookedManifestPath = path.join(tempRoot, "wave1-pilot-release.manifest.json");
+  await writeFile(
+    hookedManifestPath,
+    `${JSON.stringify(manifestSource, null, 2)}\n`,
+    "utf8",
+  );
+
   const missingAction = await runCli(tempRoot, ["release"]);
   assert.equal(missingAction.code, 1);
   assert.match(
@@ -58,7 +117,7 @@ try {
   const planResult = await runCli(tempRoot, [
     "release",
     "plan",
-    fixtureManifestPath,
+    hookedManifestPath,
   ]);
   assert.equal(planResult.code, 0, planResult.stderr);
   const planned = parseJsonOutput(planResult.stdout);
@@ -70,7 +129,7 @@ try {
   const persistedResult = await runCli(tempRoot, [
     "release",
     "persist",
-    fixtureManifestPath,
+    hookedManifestPath,
   ]);
   assert.equal(persistedResult.code, 0, persistedResult.stderr);
   const persisted = parseJsonOutput(persistedResult.stdout);
@@ -102,9 +161,12 @@ try {
   assert.equal(activatedFirst.current.releaseId, firstReleaseId);
   assert.equal(activatedFirst.receipt.action, "activate");
   assert.equal(activatedFirst.receipt.status, "succeeded");
+  assert.equal(activatedFirst.receipt.phaseEvidence.preActivate.status, "succeeded");
+  assert.equal(activatedFirst.receipt.phaseEvidence.postActivate.status, "succeeded");
+  assert.deepEqual(await readLogLines(hookLogPath), ["preActivate", "postActivate"]);
 
   const secondManifestPath = path.join(tempRoot, "wave1-pilot-deploy-2.manifest.json");
-  const secondManifest = JSON.parse(await readFile(fixtureManifestPath, "utf8"));
+  const secondManifest = JSON.parse(await readFile(hookedManifestPath, "utf8"));
   secondManifest.imageRef =
     "ghcr.io/fawxzzy/lifeline-pilot@sha256:22223333444455556666777788889999aaaabbbbccccddddeeeeffff00001111";
   secondManifest.rollbackTarget.releaseId = firstReleaseId;
@@ -137,6 +199,14 @@ try {
     activatedSecond.receipt.lineage.promotedFromReleaseId,
     firstReleaseId,
   );
+  assert.equal(activatedSecond.receipt.phaseEvidence.preActivate.status, "succeeded");
+  assert.equal(activatedSecond.receipt.phaseEvidence.postActivate.status, "succeeded");
+  assert.deepEqual(await readLogLines(hookLogPath), [
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "postActivate",
+  ]);
 
   const rollbackResult = await runCli(tempRoot, [
     "release",
@@ -150,6 +220,14 @@ try {
   assert.equal(rolledBack.previous.releaseId, secondReleaseId);
   assert.equal(rolledBack.receipt.action, "rollback");
   assert.equal(rolledBack.receipt.status, "succeeded");
+  assert.equal(rolledBack.receipt.phaseEvidence.preRollback.status, "succeeded");
+  assert.deepEqual(await readLogLines(hookLogPath), [
+    "preActivate",
+    "postActivate",
+    "preActivate",
+    "postActivate",
+    "preRollback",
+  ]);
 
   console.log("Wave 1 release CLI deterministic verification passed.");
 } finally {

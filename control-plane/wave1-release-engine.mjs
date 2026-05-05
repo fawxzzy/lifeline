@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -133,6 +134,116 @@ function previousPointerPath(rootDir, appName) {
 
 function receiptsDirectory(rootDir, appName) {
   return path.join(appReleaseRoot(rootDir, appName), "receipts");
+}
+
+function getMigrationHookCommands(migrationHooks, hookName) {
+  const hookCommands = migrationHooks?.[hookName];
+  return Array.isArray(hookCommands) ? hookCommands : [];
+}
+
+function executeShellCommand(command, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      shell: true,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (error) => {
+      resolve({
+        command,
+        status: "failed",
+        exitCode: 1,
+        signal: undefined,
+        stdout,
+        stderr,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    child.on("close", (exitCode, signal) => {
+      if (exitCode === 0 && signal === null) {
+        resolve({
+          command,
+          status: "succeeded",
+          exitCode: 0,
+          signal: undefined,
+          stdout,
+          stderr,
+        });
+        return;
+      }
+
+      resolve({
+        command,
+        status: "failed",
+        exitCode: typeof exitCode === "number" ? exitCode : 1,
+        signal: signal ?? undefined,
+        stdout,
+        stderr,
+        ...(signal ? { error: `Command terminated by signal ${signal}` } : {}),
+      });
+    });
+  });
+}
+
+async function runReleasePhase(rootDir, phase, hookCommands) {
+  const commands = Array.isArray(hookCommands) ? hookCommands : [];
+  const commandResults = [];
+
+  for (const command of commands) {
+    const result = await executeShellCommand(command, { cwd: rootDir });
+    commandResults.push({
+      command: result.command,
+      status: result.status,
+      exitCode: result.exitCode,
+      ...(result.signal ? { signal: result.signal } : {}),
+    });
+
+    if (result.status !== "succeeded") {
+      return {
+        phase,
+        status: "failed",
+        commands: commandResults,
+      };
+    }
+  }
+
+  return {
+    phase,
+    status: "succeeded",
+    commands: commandResults,
+  };
+}
+
+async function restoreReleasePointers(rootDir, appName, current, previous) {
+  const currentPath = currentPointerPath(rootDir, appName);
+  const previousPath = previousPointerPath(rootDir, appName);
+
+  if (current) {
+    await writePointer(currentPath, current);
+  } else {
+    await clearPointer(currentPath);
+  }
+
+  if (previous) {
+    await writePointer(previousPath, previous);
+  } else {
+    await clearPointer(previousPath);
+  }
 }
 
 function deriveReceiptId(payload) {
@@ -343,13 +454,62 @@ export async function activateWave1Release(
   const { metadata } = await loadReleaseMetadata(resolvedRoot, appName, releaseId);
   const current = await readPointer(layout.currentPointerPath);
   const previous = await readPointer(layout.previousPointerPath);
+  const receiptAt = options.receiptAt ?? metadata.createdAt;
+  const preActivate = await runReleasePhase(
+    resolvedRoot,
+    "preActivate",
+    getMigrationHookCommands(metadata.migrationHooks, "preActivate"),
+  );
+
+  if (preActivate.status !== "succeeded") {
+    const failedReceipt = await writeReceipt(resolvedRoot, appName, {
+      action: "activate",
+      status: "failed",
+      appName,
+      releaseId,
+      previousReleaseId: current?.releaseId,
+      createdAt: receiptAt,
+      releaseDirectory: normalizeRelativePath(resolvedRoot, layout.releaseDirectory),
+      releaseMetadataPath: normalizeRelativePath(
+        resolvedRoot,
+        layout.releaseMetadataPath,
+      ),
+      currentPointerPath: normalizeRelativePath(
+        resolvedRoot,
+        layout.currentPointerPath,
+      ),
+      previousPointerPath: normalizeRelativePath(
+        resolvedRoot,
+        layout.previousPointerPath,
+      ),
+      releaseTarget: metadata.releaseTarget,
+      rollbackTarget: metadata.rollbackTarget,
+      phaseEvidence: {
+        preActivate,
+      },
+      failedPhase: "preActivate",
+      preservedCurrentReleaseId: current?.releaseId,
+      preservedPreviousReleaseId: previous?.releaseId,
+    });
+
+    return {
+      ok: false,
+      phase: "preActivate",
+      current,
+      previous,
+      receipt: {
+        ...failedReceipt.receipt,
+        receiptPath: normalizeRelativePath(resolvedRoot, failedReceipt.receiptPath),
+      },
+    };
+  }
+
   const health =
     (await options.checkHealth?.({
       metadata,
       current,
       previous,
     })) ?? { ok: true, status: 200 };
-  const receiptAt = options.receiptAt ?? metadata.createdAt;
 
   if (!health.ok) {
     const failedReceipt = await writeReceipt(resolvedRoot, appName, {
@@ -375,12 +535,17 @@ export async function activateWave1Release(
       releaseTarget: metadata.releaseTarget,
       rollbackTarget: metadata.rollbackTarget,
       health,
+      phaseEvidence: {
+        preActivate,
+      },
+      failedPhase: "healthcheck",
       preservedCurrentReleaseId: current?.releaseId,
       preservedPreviousReleaseId: previous?.releaseId,
     });
 
     return {
       ok: false,
+      phase: "healthcheck",
       health,
       current,
       previous,
@@ -415,6 +580,61 @@ export async function activateWave1Release(
     await clearPointer(layout.previousPointerPath);
   }
 
+  const postActivate = await runReleasePhase(
+    resolvedRoot,
+    "postActivate",
+    getMigrationHookCommands(metadata.migrationHooks, "postActivate"),
+  );
+
+  if (postActivate.status !== "succeeded") {
+    await restoreReleasePointers(resolvedRoot, appName, current, previous);
+
+    const failedReceipt = await writeReceipt(resolvedRoot, appName, {
+      action: "activate",
+      status: "failed",
+      appName,
+      releaseId,
+      previousReleaseId: current?.releaseId,
+      createdAt: receiptAt,
+      releaseDirectory: normalizeRelativePath(resolvedRoot, layout.releaseDirectory),
+      releaseMetadataPath: normalizeRelativePath(
+        resolvedRoot,
+        layout.releaseMetadataPath,
+      ),
+      currentPointerPath: normalizeRelativePath(
+        resolvedRoot,
+        layout.currentPointerPath,
+      ),
+      previousPointerPath: normalizeRelativePath(
+        resolvedRoot,
+        layout.previousPointerPath,
+      ),
+      releaseTarget: metadata.releaseTarget,
+      rollbackTarget: metadata.rollbackTarget,
+      health,
+      phaseEvidence: {
+        preActivate,
+        postActivate,
+      },
+      failedPhase: "postActivate",
+      preservedCurrentReleaseId: current?.releaseId,
+      preservedPreviousReleaseId: previous?.releaseId,
+      revertedPointers: true,
+    });
+
+    return {
+      ok: false,
+      phase: "postActivate",
+      health,
+      current,
+      previous,
+      receipt: {
+        ...failedReceipt.receipt,
+        receiptPath: normalizeRelativePath(resolvedRoot, failedReceipt.receiptPath),
+      },
+    };
+  }
+
   const activationReceipt = await writeReceipt(resolvedRoot, appName, {
     action: "activate",
     status: "succeeded",
@@ -438,6 +658,10 @@ export async function activateWave1Release(
     releaseTarget: metadata.releaseTarget,
     rollbackTarget: metadata.rollbackTarget,
     health,
+    phaseEvidence: {
+      preActivate,
+      postActivate,
+    },
     lineage: {
       promotedFromReleaseId: current?.releaseId,
       promotedToReleaseId: releaseId,
@@ -477,6 +701,58 @@ export async function rollbackWave1Release(rootDir, appName, options = {}) {
     appName,
     previous.releaseId,
   );
+  const preRollback = await runReleasePhase(
+    resolvedRoot,
+    "preRollback",
+    getMigrationHookCommands(metadata.migrationHooks, "preRollback"),
+  );
+
+  if (preRollback.status !== "succeeded") {
+    const failedReceipt = await writeReceipt(resolvedRoot, appName, {
+      action: "rollback",
+      status: "failed",
+      appName,
+      releaseId: previous.releaseId,
+      previousReleaseId: current.releaseId,
+      createdAt: options.receiptAt ?? metadata.createdAt,
+      releaseDirectory: normalizeRelativePath(
+        resolvedRoot,
+        targetLayout.releaseDirectory,
+      ),
+      releaseMetadataPath: normalizeRelativePath(
+        resolvedRoot,
+        targetLayout.releaseMetadataPath,
+      ),
+      currentPointerPath: normalizeRelativePath(
+        resolvedRoot,
+        targetLayout.currentPointerPath,
+      ),
+      previousPointerPath: normalizeRelativePath(
+        resolvedRoot,
+        targetLayout.previousPointerPath,
+      ),
+      releaseTarget: metadata.releaseTarget,
+      rollbackTarget: metadata.rollbackTarget,
+      phaseEvidence: {
+        preRollback,
+      },
+      failedPhase: "preRollback",
+      preservedCurrentReleaseId: current.releaseId,
+      preservedPreviousReleaseId: previous.releaseId,
+    });
+
+    return {
+      ok: false,
+      phase: "preRollback",
+      current,
+      previous,
+      receipt: {
+        ...failedReceipt.receipt,
+        receiptPath: normalizeRelativePath(resolvedRoot, failedReceipt.receiptPath),
+      },
+    };
+  }
+
   const health =
     (await options.checkHealth?.({
       metadata,
@@ -512,12 +788,17 @@ export async function rollbackWave1Release(rootDir, appName, options = {}) {
       releaseTarget: metadata.releaseTarget,
       rollbackTarget: metadata.rollbackTarget,
       health,
+      phaseEvidence: {
+        preRollback,
+      },
+      failedPhase: "healthcheck",
       preservedCurrentReleaseId: current.releaseId,
       preservedPreviousReleaseId: previous.releaseId,
     });
 
     return {
       ok: false,
+      phase: "healthcheck",
       health,
       current,
       previous,
@@ -572,6 +853,9 @@ export async function rollbackWave1Release(rootDir, appName, options = {}) {
     releaseTarget: metadata.releaseTarget,
     rollbackTarget: metadata.rollbackTarget,
     health,
+    phaseEvidence: {
+      preRollback,
+    },
     lineage: {
       promotedFromReleaseId: current.releaseId,
       promotedToReleaseId: previous.releaseId,
