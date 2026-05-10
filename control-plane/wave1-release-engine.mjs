@@ -51,8 +51,32 @@ function releaseRoot(rootDir) {
   return path.join(rootDir, ".lifeline", "releases");
 }
 
+function validateReleaseAppName(appName) {
+  if (typeof appName !== "string" || appName.trim().length === 0) {
+    throw new Error("App name must be a non-empty string.");
+  }
+
+  if (path.isAbsolute(appName)) {
+    throw new Error(`Invalid appName "${appName}": absolute paths are not allowed.`);
+  }
+
+  if (appName.includes("/") || appName.includes("\\")) {
+    throw new Error(
+      `Invalid appName "${appName}": path separators are not allowed.`,
+    );
+  }
+
+  if (appName === "." || appName === "..") {
+    throw new Error(
+      `Invalid appName "${appName}": dot-segment values are not allowed.`,
+    );
+  }
+
+  return appName;
+}
+
 function appReleaseRoot(rootDir, appName) {
-  return path.join(releaseRoot(rootDir), appName);
+  return path.join(releaseRoot(rootDir), validateReleaseAppName(appName));
 }
 
 function hasPathEscape(relativePath) {

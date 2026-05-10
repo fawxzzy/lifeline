@@ -135,6 +135,7 @@ const tempRoot = await mkdtemp(
 try {
   const appName = "lifeline-pilot";
   const outsidePath = path.join(tempRoot, ".lifeline", "outside");
+  const escapedAppPath = path.join(tempRoot, ".lifeline", "escaped-app");
   const hookRunnerPath = path.join(tempRoot, "hook-runner.mjs");
   const hookLogPath = path.join(tempRoot, "hook-log.txt");
   await writeHookRunner(hookRunnerPath);
@@ -211,6 +212,48 @@ try {
     /Invalid releaseId "\.\.\/\.\.\/outside": path separators are not allowed\./,
   );
   assert.equal(await pathExists(outsidePath), false);
+
+  await assert.rejects(
+    persistWave1Release(
+      createManifest({
+        appName: "../escaped-app",
+        artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:1313131313131313131313131313131313131313131313131313131313131313",
+        rollbackReleaseId: "bootstrap-release",
+        rollbackArtifactRef:
+          "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        migrationHooks: successHooks,
+      }),
+      {
+        rootDir: tempRoot,
+        releaseId: "release-20260425-0001-appname-unix",
+        createdAt: "2026-04-25T18:01:30.000Z",
+        receiptAt: "2026-04-25T18:01:30.000Z",
+      },
+    ),
+    /Invalid appName "\.\.\/escaped-app": path separators are not allowed\./,
+  );
+  assert.equal(await pathExists(escapedAppPath), false);
+
+  await assert.rejects(
+    persistWave1Release(
+      createManifest({
+        appName: "..\\escaped-app",
+        artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:1414141414141414141414141414141414141414141414141414141414141414",
+        rollbackReleaseId: "bootstrap-release",
+        rollbackArtifactRef:
+          "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        migrationHooks: successHooks,
+      }),
+      {
+        rootDir: tempRoot,
+        releaseId: "release-20260425-0001-appname-win",
+        createdAt: "2026-04-25T18:01:45.000Z",
+        receiptAt: "2026-04-25T18:01:45.000Z",
+      },
+    ),
+    /Invalid appName "\.\.\\escaped-app": path separators are not allowed\./,
+  );
+  assert.equal(await pathExists(escapedAppPath), false);
 
   await assert.rejects(
     persistWave1Release(
