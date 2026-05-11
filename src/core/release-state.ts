@@ -1,6 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+const WAVE1_RELEASE_RECEIPT_VERSION = "atlas.lifeline.release-receipt.v1";
+
 export interface ReleasePointer {
   releaseId: string;
   updatedAt: string;
@@ -27,8 +29,19 @@ export interface ReleaseReceiptSummary {
   action: string;
   status: string;
   releaseId: string;
+  contractVersion: string;
   createdAt?: string;
   path: string;
+}
+
+export interface ReleaseReceiptHealthSummary {
+  status: "ok" | "degraded";
+  contractVersion: string;
+  validReceiptCount: number;
+  versionMismatchCount: number;
+  invalidReceiptCount: number;
+  unreadableReceiptCount: number;
+  missingLatestReceipt: boolean;
 }
 
 export interface ReleaseOperatorEvidence {
@@ -37,7 +50,9 @@ export interface ReleaseOperatorEvidence {
   rollbackTarget?: ReleaseRollbackTarget;
   receiptsDir: string;
   rollbackReady: boolean;
+  latestReceipt?: ReleaseReceiptSummary;
   latestRollbackReceipt?: ReleaseReceiptSummary;
+  receiptHealth: ReleaseReceiptHealthSummary;
   latestReceipts: ReleaseReceiptSummary[];
 }
 
@@ -153,9 +168,16 @@ async function readReleaseRecord(
 async function readLatestReceipts(
   rootDir: string,
   receiptsDir: string,
-): Promise<ReleaseReceiptSummary[]> {
+): Promise<{
+  latestReceipts: ReleaseReceiptSummary[];
+  latestReceipt?: ReleaseReceiptSummary;
+  receiptHealth: ReleaseReceiptHealthSummary;
+}> {
   const entries = (await readdir(receiptsDir).catch(() => [])) as string[];
   const receipts: Array<ReleaseReceiptSummary & { sortAt: number }> = [];
+  let versionMismatchCount = 0;
+  let invalidReceiptCount = 0;
+  let unreadableReceiptCount = 0;
 
   for (const entry of entries) {
     if (!entry.endsWith(".json")) {
@@ -164,7 +186,18 @@ async function readLatestReceipts(
 
     const receiptPath = path.join(receiptsDir, entry);
     const parsed = await readJsonIfPresent(receiptPath);
+    if (parsed === undefined) {
+      unreadableReceiptCount += 1;
+      continue;
+    }
+
     if (!isRecord(parsed)) {
+      invalidReceiptCount += 1;
+      continue;
+    }
+
+    if (parsed.contractVersion !== WAVE1_RELEASE_RECEIPT_VERSION) {
+      versionMismatchCount += 1;
       continue;
     }
 
@@ -174,6 +207,7 @@ async function readLatestReceipts(
       !isNonEmptyString(parsed.status) ||
       !isNonEmptyString(parsed.releaseId)
     ) {
+      invalidReceiptCount += 1;
       continue;
     }
 
@@ -186,16 +220,37 @@ async function readLatestReceipts(
       action: parsed.action,
       status: parsed.status,
       releaseId: parsed.releaseId,
+      contractVersion: parsed.contractVersion,
       ...(createdAt ? { createdAt } : {}),
       path: normalizeRelativePath(rootDir, receiptPath),
       sortAt: Number.isNaN(sortAt) ? 0 : sortAt,
     });
   }
 
-  return receipts
+  const latestReceipts = receipts
     .sort((left, right) => right.sortAt - left.sortAt)
     .slice(0, 3)
     .map(({ sortAt: _sortAt, ...receipt }) => receipt);
+
+  return {
+    latestReceipts,
+    ...(latestReceipts[0] ? { latestReceipt: latestReceipts[0] } : {}),
+    receiptHealth: {
+      status:
+        versionMismatchCount > 0 ||
+          invalidReceiptCount > 0 ||
+          unreadableReceiptCount > 0 ||
+          latestReceipts.length === 0
+          ? "degraded"
+          : "ok",
+      contractVersion: WAVE1_RELEASE_RECEIPT_VERSION,
+      validReceiptCount: receipts.length,
+      versionMismatchCount,
+      invalidReceiptCount,
+      unreadableReceiptCount,
+      missingLatestReceipt: latestReceipts.length === 0,
+    },
+  };
 }
 
 export async function readReleaseOperatorEvidence(
@@ -221,12 +276,22 @@ export async function readReleaseOperatorEvidence(
   const currentMetadata = current?.metadataPath
     ? await readReleaseMetadata(path.join(resolvedRoot, current.metadataPath))
     : undefined;
-  const latestReceipts = await readLatestReceipts(resolvedRoot, receiptsDir);
+  const { latestReceipts, latestReceipt, receiptHealth } = await readLatestReceipts(
+    resolvedRoot,
+    receiptsDir,
+  );
   const latestRollbackReceipt = latestReceipts.find(
     (receipt) => receipt.action === "rollback",
   );
 
-  if (!current && !previous && latestReceipts.length === 0) {
+  if (
+    !current &&
+    !previous &&
+    latestReceipts.length === 0 &&
+    receiptHealth.versionMismatchCount === 0 &&
+    receiptHealth.invalidReceiptCount === 0 &&
+    receiptHealth.unreadableReceiptCount === 0
+  ) {
     return undefined;
   }
 
@@ -240,6 +305,8 @@ export async function readReleaseOperatorEvidence(
       current && previous && currentMetadata?.rollbackTarget,
     ),
     receiptsDir: normalizeRelativePath(resolvedRoot, receiptsDir),
+    receiptHealth,
+    ...(latestReceipt ? { latestReceipt } : {}),
     ...(latestRollbackReceipt ? { latestRollbackReceipt } : {}),
     latestReceipts,
   };

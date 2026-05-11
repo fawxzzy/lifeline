@@ -216,6 +216,31 @@ try {
     checkHealth: async () => ({ ok: true, status: 200 }),
   });
 
+  const receiptsDir = path.join(
+    tempWorkspace,
+    ".lifeline",
+    "releases",
+    appName,
+    "receipts",
+  );
+  await writeFile(
+    path.join(receiptsDir, "mismatched-receipt.json"),
+    JSON.stringify({
+      contractVersion: "atlas.lifeline.release-receipt.v0",
+      receiptId: "mismatched-receipt",
+      action: "activate",
+      status: "succeeded",
+      releaseId: "release-runtime-smoke-app-z",
+      createdAt: "2026-04-26T00:06:00.000Z",
+    }, null, 2),
+    "utf8",
+  );
+  await writeFile(
+    path.join(receiptsDir, "unreadable-receipt.json"),
+    "{not-json",
+    "utf8",
+  );
+
   const statusResult = await runCli(["status", appName], {
     cwd: tempWorkspace,
     allowFailure: true,
@@ -232,6 +257,21 @@ try {
   assertIncludes(statusResult.stdout, "- rollbackTarget.artifactRef: docker://runtime-smoke-app:release-a", "status: missing rollback artifact ref");
   assertIncludes(statusResult.stdout, "- rollbackTarget.strategy: restore", "status: missing rollback strategy");
   assertIncludes(statusResult.stdout, "- rollbackReady: yes", "status: missing rollback readiness");
+  assertIncludes(
+    statusResult.stdout,
+    "- receiptContractVersion: atlas.lifeline.release-receipt.v1",
+    "status: missing receipt contract version",
+  );
+  assertIncludes(
+    statusResult.stdout,
+    "- receiptHealth: degraded (versionMismatch=1, unreadable=1)",
+    "status: missing degraded receipt health summary",
+  );
+  assertIncludes(
+    statusResult.stdout,
+    "- latestReceipt: ",
+    "status: missing latest receipt summary",
+  );
   assertIncludes(statusResult.stdout, "- latestRollbackReceipt: rollback succeeded release-runtime-smoke-app-a", "status: missing rollback rehearsal receipt");
   assertIncludes(statusResult.stdout, "- receiptsDir: .lifeline/releases/runtime-smoke-app/receipts", "status: missing receipts dir");
   assertIncludes(statusResult.stdout, "- receipt: activate succeeded release-runtime-smoke-app-b", "status: missing receipt summary");
@@ -249,6 +289,21 @@ try {
   assertIncludes(proofResult.stdout, "- previousReleaseId: release-runtime-smoke-app-a", "proof-text: missing previous release id");
   assertIncludes(proofResult.stdout, "- rollbackTarget: release-runtime-smoke-app-a (restore)", "proof-text: missing rollback target");
   assertIncludes(proofResult.stdout, "- rollbackReady: yes", "proof-text: missing rollback readiness");
+  assertIncludes(
+    proofResult.stdout,
+    "- receiptContractVersion: atlas.lifeline.release-receipt.v1",
+    "proof-text: missing receipt contract version",
+  );
+  assertIncludes(
+    proofResult.stdout,
+    "- receiptHealth: degraded (versionMismatch=1, unreadable=1)",
+    "proof-text: missing degraded receipt health summary",
+  );
+  assertIncludes(
+    proofResult.stdout,
+    "- latestReceipt: ",
+    "proof-text: missing latest receipt summary",
+  );
   assertIncludes(proofResult.stdout, "- latestRollbackReceipt: rollback succeeded release-runtime-smoke-app-a", "proof-text: missing rollback rehearsal receipt");
 
   const logsResult = await runCli(["logs", appName, "20"], {
@@ -263,6 +318,21 @@ try {
   assertIncludes(logsResult.stdout, `=== lifeline logs ${appName} ===`, "logs: missing evidence header");
   assertIncludes(logsResult.stdout, "- currentReleaseId: release-runtime-smoke-app-b", "logs: missing current release id");
   assertIncludes(logsResult.stdout, "- previousReleaseId: release-runtime-smoke-app-a", "logs: missing previous release id");
+  assertIncludes(
+    logsResult.stdout,
+    "- receiptContractVersion: atlas.lifeline.release-receipt.v1",
+    "logs: missing receipt contract version",
+  );
+  assertIncludes(
+    logsResult.stdout,
+    "- latestReceipt: ",
+    "logs: missing latest receipt summary",
+  );
+  assertIncludes(
+    logsResult.stdout,
+    "- receiptHealth: degraded (versionMismatch=1, unreadable=1)",
+    "logs: missing degraded receipt health summary",
+  );
   assertIncludes(logsResult.stdout, "=== lifeline up ", "logs: missing startup header");
   assertIncludes(logsResult.stdout, `runtime-smoke-app listening on ${port}`, "logs: missing app startup line");
 
