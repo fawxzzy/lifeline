@@ -28,6 +28,36 @@ export async function runLogsCommand(
     if (releaseEvidence.previous) {
       console.log(`- previousReleaseId: ${releaseEvidence.previous.releaseId}`);
     }
+    console.log(`- receiptContractVersion: ${releaseEvidence.receiptHealth.contractVersion}`);
+    if (releaseEvidence.latestReceipt) {
+      console.log(
+        `- latestReceipt: ${releaseEvidence.latestReceipt.receiptId} ${releaseEvidence.latestReceipt.action} ${releaseEvidence.latestReceipt.status} ${releaseEvidence.latestReceipt.releaseId} (${releaseEvidence.latestReceipt.path})`,
+      );
+    }
+    if (releaseEvidence.receiptHealth.status === "ok") {
+      console.log("- receiptHealth: ok");
+    } else {
+      const reasons = [];
+      if (releaseEvidence.receiptHealth.versionMismatchCount > 0) {
+        reasons.push(
+          `versionMismatch=${releaseEvidence.receiptHealth.versionMismatchCount}`,
+        );
+      }
+      if (releaseEvidence.receiptHealth.invalidReceiptCount > 0) {
+        reasons.push(`invalid=${releaseEvidence.receiptHealth.invalidReceiptCount}`);
+      }
+      if (releaseEvidence.receiptHealth.unreadableReceiptCount > 0) {
+        reasons.push(
+          `unreadable=${releaseEvidence.receiptHealth.unreadableReceiptCount}`,
+        );
+      }
+      if (releaseEvidence.receiptHealth.missingLatestReceipt) {
+        reasons.push("missingLatestReceipt=yes");
+      }
+      console.log(
+        `- receiptHealth: degraded${reasons.length > 0 ? ` (${reasons.join(", ")})` : ""}`,
+      );
+    }
     console.log("");
   }
 
