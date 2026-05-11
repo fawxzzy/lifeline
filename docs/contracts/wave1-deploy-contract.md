@@ -71,6 +71,7 @@ Wave 1 release execution is local-first and single-host:
 - each release is persisted once at `.lifeline/releases/<app>/<releaseId>/metadata.json`
 - release directories are immutable after the metadata lands
 - mutable activation state lives only in `.lifeline/releases/<app>/current.json` and `previous.json`
+- `<app>` is a single filesystem path segment derived from `appName`, so absolute values, separator-bearing values, and `.` or `..` are rejected before any release path is built
 - activation is health-gated before the current pointer advances
 - failed health gates preserve the existing current and previous release pointers
 - rollback promotes the previous known-good release back to current
