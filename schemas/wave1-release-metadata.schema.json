@@ -28,7 +28,23 @@
     },
     "appName": {
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "allOf": [
+        {
+          "pattern": ".*\\S.*"
+        },
+        {
+          "pattern": "^[^/\\\\]+$"
+        },
+        {
+          "not": {
+            "enum": [
+              ".",
+              ".."
+            ]
+          }
+        }
+      ]
     },
     "artifactRef": {
       "type": "string",

@@ -200,6 +200,38 @@ assert.deepEqual(invalidManifest.issues, [
   },
 ]);
 
+const invalidAppNames = [
+  { appName: "../escaped-app", expectedMessage: "must not contain path separators" },
+  { appName: "..\\escaped-app", expectedMessage: "must not contain path separators" },
+  { appName: ".", expectedMessage: "must not equal '.' or '..'" },
+  { appName: "..", expectedMessage: "must not equal '.' or '..'" },
+  { appName: "   ", expectedMessage: "must be a non-empty string" },
+];
+
+for (const { appName, expectedMessage } of invalidAppNames) {
+  const invalidAppManifest = validateWave1DeployManifest({
+    ...sampleManifest,
+    appName,
+  });
+  assert(
+    invalidAppManifest.issues.some((issue) => (
+      issue.path === "appName" && issue.message === expectedMessage
+    )),
+    `expected appName validation issue for manifest appName=${JSON.stringify(appName)}, got ${JSON.stringify(invalidAppManifest.issues)}`,
+  );
+
+  const invalidAppMetadata = validateWave1ReleaseMetadata({
+    ...dryRunPlan.releaseMetadata,
+    appName,
+  });
+  assert(
+    invalidAppMetadata.issues.some((issue) => (
+      issue.path === "appName" && issue.message === expectedMessage
+    )),
+    `expected appName validation issue for metadata appName=${JSON.stringify(appName)}, got ${JSON.stringify(invalidAppMetadata.issues)}`,
+  );
+}
+
 const invalidMetadata = validateWave1ReleaseMetadata({
   ...dryRunPlan.releaseMetadata,
   validation: {
@@ -222,13 +254,31 @@ assert.equal(
   deploySchema.properties.rollbackTarget.properties.strategy.enum.join(","),
   "redeploy,restore",
 );
+assert.deepEqual(
+  deploySchema.properties.appName,
+  metadataSchema.properties.appName,
+  "deploy and metadata schemas should enforce the same appName boundary",
+);
+assert.ok(
+  deploySchema.properties.appName.allOf.some((rule) => rule.pattern === ".*\\S.*") &&
+    deploySchema.properties.appName.allOf.some((rule) => rule.pattern === "^[^/\\\\]+$"),
+  "deploy contract schema should reject whitespace-only and separator-bearing app names",
+);
+assert.deepEqual(
+  deploySchema.properties.appName.allOf.find((rule) => rule.not)?.not.enum,
+  [".", ".."],
+  "deploy contract schema should reject '.' and '..' app names",
+);
 assert.ok(
   docs.includes("artifactRef") &&
     docs.includes("imageRef") &&
     docs.includes("repo") &&
     docs.includes("branch") &&
     docs.includes("releaseTarget") &&
-    docs.includes("rollbackTarget.strategy"),
+    docs.includes("rollbackTarget.strategy") &&
+    docs.includes("Filesystem-bound identifiers must fail at contract intake") &&
+    docs.includes("Validate path-segment safety at both schema/contract boundaries and execution boundaries") &&
+    docs.includes("Engine-only validation lets invalid manifests appear valid during planning or external tooling integration"),
   "docs/contracts/wave1-deploy-contract.md should describe the canonical deploy and metadata fields",
 );
 
