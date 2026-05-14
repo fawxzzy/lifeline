@@ -1,0 +1,38 @@
+{
+  "contract_version": "atlas.qa.adapter.v1",
+  "adapter_id": "lifeline.package",
+  "repo_id": "lifeline",
+  "repo_path": "repos/fawxzzy-lifeline",
+  "framework": "service-or-package",
+  "lens_manifest_ref": "ops/atlas/qa/lenses/atlas-default-web.v1.json",
+  "commands": {
+    "typecheck": {
+      "command": "pnpm run typecheck"
+    },
+    "verify": {
+      "command": "pnpm run verify"
+    },
+    "qa_contract": {
+      "command": "pnpm run verify"
+    }
+  },
+  "lenses": [
+    {
+      "lens_id": "desktop.chromium.emulated",
+      "profile_id": "desktop.chromium",
+      "proof_kind": "emulated",
+      "evidence_kind": "emulated_browser",
+      "required_for": [
+        "evidence",
+        "promotion"
+      ],
+      "promotion_tier": "emulated_browser",
+      "fallback_behavior": "blocked",
+      "execution_mode": "repo_command",
+      "command_ref": "qa_contract"
+    }
+  ],
+  "supported_scenarios": [
+    "lifeline.contract-smoke"
+  ]
+}
