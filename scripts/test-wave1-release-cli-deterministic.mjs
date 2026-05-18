@@ -161,6 +161,7 @@ try {
       firstReleaseId,
     ],
     {
+      CI: "true",
       LIFELINE_RELEASE_CONFIRMATION_CONTEXT: "interactive",
     },
   );
@@ -241,6 +242,7 @@ try {
       "lifeline-pilot",
     ],
     {
+      CI: "true",
       LIFELINE_RELEASE_CONFIRMATION_CONTEXT: "interactive",
     },
   );

@@ -115,6 +115,14 @@ function resolveReleaseConfirmationContext(): "interactive" | "non-interactive" 
 }
 
 function bypassesReleaseConfirmation(): boolean {
+  const explicitContext = process.env.LIFELINE_RELEASE_CONFIRMATION_CONTEXT;
+  if (
+    explicitContext === "interactive" ||
+    explicitContext === "non-interactive"
+  ) {
+    return explicitContext === "non-interactive";
+  }
+
   if (isTruthyEnvValue(process.env.LIFELINE_DETERMINISTIC_TEST)) {
     return true;
   }
