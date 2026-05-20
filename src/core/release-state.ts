@@ -46,12 +46,20 @@ export interface ReleaseReceiptHealthSummary {
   missingLatestReceipt: boolean;
 }
 
+export interface ReleaseRollbackConfidenceSummary {
+  status: "ready" | "degraded";
+  issues: string[];
+  replayedPreviousReleaseId?: string;
+  replayedPreviousArtifactRef?: string;
+}
+
 export interface ReleaseOperatorEvidence {
   current?: ReleaseRecord;
   previous?: ReleaseRecord;
   rollbackTarget?: ReleaseRollbackTarget;
   receiptsDir: string;
   rollbackReady: boolean;
+  rollbackConfidence: ReleaseRollbackConfidenceSummary;
   latestReceipt?: ReleaseReceiptSummary;
   latestRollbackReceipt?: ReleaseReceiptSummary;
   receiptHealth: ReleaseReceiptHealthSummary;
@@ -175,6 +183,33 @@ async function readReleaseRecord(
   };
 }
 
+async function readReleaseRecordById(
+  rootDir: string,
+  appName: string,
+  releaseId: string | undefined,
+): Promise<ReleaseRecord | undefined> {
+  if (!isNonEmptyString(releaseId)) {
+    return undefined;
+  }
+
+  const metadataPath = path.join(
+    rootDir,
+    ".lifeline",
+    "releases",
+    appName,
+    releaseId,
+    "metadata.json",
+  );
+  const metadata = await readReleaseMetadata(metadataPath);
+
+  return {
+    releaseId,
+    updatedAt: "",
+    ...(metadata?.artifactRef ? { artifactRef: metadata.artifactRef } : {}),
+    ...(metadata ? { metadataPath: normalizeRelativePath(rootDir, metadataPath) } : {}),
+  };
+}
+
 async function readLatestReceipts(
   rootDir: string,
   receiptsDir: string,
@@ -288,12 +323,72 @@ export async function readReleaseOperatorEvidence(
     : undefined;
   const [{ latestReceipts, latestReceipt, receiptHealth }, replayVerification] =
     await Promise.all([
-    readLatestReceipts(resolvedRoot, receiptsDir),
-    verifyWave1ReleaseReplay(appName, resolvedRoot),
+      readLatestReceipts(resolvedRoot, receiptsDir),
+      verifyWave1ReleaseReplay(appName, resolvedRoot),
     ]);
+  const replayedPreviousRecord = await readReleaseRecordById(
+    resolvedRoot,
+    appName,
+    replayVerification.replayedPrevious?.releaseId,
+  );
   const latestRollbackReceipt = latestReceipts.find(
     (receipt) => receipt.action === "rollback",
   );
+
+  const rollbackConfidenceIssues: string[] = [];
+  const rollbackTarget = currentMetadata?.rollbackTarget;
+  if (!rollbackTarget) {
+    rollbackConfidenceIssues.push("rollback target metadata is missing");
+  }
+  if (!replayVerification.ok) {
+    rollbackConfidenceIssues.push(
+      "release replay is degraded, so rollback evidence cannot be trusted",
+    );
+  }
+  if (!replayVerification.replayedPrevious?.releaseId) {
+    rollbackConfidenceIssues.push(
+      "replayed previous-release evidence is missing",
+    );
+  }
+  if (
+    rollbackTarget &&
+    replayVerification.replayedPrevious?.releaseId &&
+    rollbackTarget.releaseId !== replayVerification.replayedPrevious.releaseId
+  ) {
+    rollbackConfidenceIssues.push(
+      `rollback target releaseId ${rollbackTarget.releaseId} does not match replayed previous release ${replayVerification.replayedPrevious.releaseId}`,
+    );
+  }
+  if (
+    rollbackTarget &&
+    replayedPreviousRecord &&
+    replayedPreviousRecord.artifactRef &&
+    rollbackTarget.artifactRef !== replayedPreviousRecord.artifactRef
+  ) {
+    rollbackConfidenceIssues.push(
+      `rollback target artifactRef ${rollbackTarget.artifactRef} does not match replayed previous artifact ${replayedPreviousRecord.artifactRef}`,
+    );
+  }
+  if (
+    rollbackTarget &&
+    replayVerification.replayedPrevious?.releaseId &&
+    !replayedPreviousRecord?.artifactRef
+  ) {
+    rollbackConfidenceIssues.push(
+      `replayed previous release ${replayVerification.replayedPrevious.releaseId} is missing persisted artifact metadata`,
+    );
+  }
+
+  const rollbackConfidence: ReleaseRollbackConfidenceSummary = {
+    status: rollbackConfidenceIssues.length === 0 ? "ready" : "degraded",
+    issues: rollbackConfidenceIssues,
+    ...(replayVerification.replayedPrevious?.releaseId
+      ? { replayedPreviousReleaseId: replayVerification.replayedPrevious.releaseId }
+      : {}),
+    ...(replayedPreviousRecord?.artifactRef
+      ? { replayedPreviousArtifactRef: replayedPreviousRecord.artifactRef }
+      : {}),
+  };
 
   if (
     !current &&
@@ -312,9 +407,8 @@ export async function readReleaseOperatorEvidence(
     ...(currentMetadata?.rollbackTarget
       ? { rollbackTarget: currentMetadata.rollbackTarget }
       : {}),
-    rollbackReady: Boolean(
-      current && previous && currentMetadata?.rollbackTarget,
-    ),
+    rollbackReady: rollbackConfidence.status === "ready",
+    rollbackConfidence,
     receiptsDir: normalizeRelativePath(resolvedRoot, receiptsDir),
     receiptHealth,
     ...(latestReceipt ? { latestReceipt } : {}),

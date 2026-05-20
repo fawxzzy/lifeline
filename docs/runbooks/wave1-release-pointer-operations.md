@@ -24,14 +24,15 @@ Destructive release pointer movement must be intentionally acknowledged at the C
 
 ## Rollback
 
-1. Confirm the current release has a valid previous release and rollback target.
-2. Re-run the rollback command with explicit confirmation:
+1. Confirm `lifeline status` reports both `rollbackReady: yes` and `rollbackConfidence: ready`.
+2. If `rollbackConfidence` is degraded, stop and fix the reported mismatch before moving the release pointers.
+3. Re-run the rollback command with explicit confirmation:
 
    ```bash
    lifeline release rollback <app-name> --yes
    ```
 
-3. Inspect the rollback receipt and operator evidence before treating the release as recovered.
+4. Inspect the rollback receipt and operator evidence before treating the release as recovered.
 
 ## Failure Mode
 

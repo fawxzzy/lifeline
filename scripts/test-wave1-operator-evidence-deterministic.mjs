@@ -232,6 +232,7 @@ try {
   assertIncludes(statusResult.stdout, "- rollbackTarget.artifactRef: docker://runtime-smoke-app:release-a", "status: missing rollback artifact ref");
   assertIncludes(statusResult.stdout, "- rollbackTarget.strategy: restore", "status: missing rollback strategy");
   assertIncludes(statusResult.stdout, "- rollbackReady: yes", "status: missing rollback readiness");
+  assertIncludes(statusResult.stdout, "- rollbackConfidence: ready", "status: missing healthy rollback confidence");
   assertIncludes(
     statusResult.stdout,
     "- receiptContractVersion: atlas.lifeline.release-receipt.v1",
@@ -261,6 +262,7 @@ try {
   assertIncludes(proofResult.stdout, "- previousReleaseId: release-runtime-smoke-app-a", "proof-text: missing previous release id");
   assertIncludes(proofResult.stdout, "- rollbackTarget: release-runtime-smoke-app-a (restore)", "proof-text: missing rollback target");
   assertIncludes(proofResult.stdout, "- rollbackReady: yes", "proof-text: missing rollback readiness");
+  assertIncludes(proofResult.stdout, "- rollbackConfidence: ready", "proof-text: missing healthy rollback confidence");
   assertIncludes(
     proofResult.stdout,
     "- receiptContractVersion: atlas.lifeline.release-receipt.v1",
@@ -274,6 +276,105 @@ try {
     "proof-text: missing latest receipt summary",
   );
   assertIncludes(proofResult.stdout, "- latestRollbackReceipt: rollback succeeded release-runtime-smoke-app-a", "proof-text: missing rollback rehearsal receipt");
+
+  const currentMetadataPath = path.join(
+    tempWorkspace,
+    ".lifeline",
+    "releases",
+    appName,
+    releaseB.releaseId,
+    "metadata.json",
+  );
+  const currentMetadata = JSON.parse(await readFile(currentMetadataPath, "utf8"));
+
+  currentMetadata.rollbackTarget.releaseId = "stale-release";
+  await writeFile(
+    currentMetadataPath,
+    `${JSON.stringify(currentMetadata, null, 2)}\n`,
+    "utf8",
+  );
+
+  const driftedStatusResult = await runCli(["status", appName], {
+    cwd: tempWorkspace,
+    allowFailure: true,
+  });
+  assert.equal(
+    driftedStatusResult.code,
+    0,
+    `drifted status: expected exit 0, got ${driftedStatusResult.code}\n${driftedStatusResult.stdout}\n${driftedStatusResult.stderr}`,
+  );
+  assertIncludes(driftedStatusResult.stdout, "- rollbackReady: no", "status: missing degraded rollback readiness");
+  assertIncludes(driftedStatusResult.stdout, "- rollbackConfidence: degraded", "status: missing degraded rollback confidence");
+  assertIncludes(
+    driftedStatusResult.stdout,
+    "rollback target releaseId stale-release does not match replayed previous release release-runtime-smoke-app-a",
+    "status: missing rollback release drift detail",
+  );
+
+  const driftedProofResult = await runCli(["status", appName, "--proof-text"], {
+    cwd: tempWorkspace,
+    allowFailure: true,
+  });
+  assert.equal(
+    driftedProofResult.code,
+    0,
+    `drifted proof-text: expected exit 0, got ${driftedProofResult.code}\n${driftedProofResult.stdout}\n${driftedProofResult.stderr}`,
+  );
+  assertIncludes(driftedProofResult.stdout, "- rollbackReady: no", "proof-text: missing degraded rollback readiness");
+  assertIncludes(driftedProofResult.stdout, "- rollbackConfidence: degraded", "proof-text: missing degraded rollback confidence");
+  assertIncludes(
+    driftedProofResult.stdout,
+    "rollback target releaseId stale-release does not match replayed previous release release-runtime-smoke-app-a",
+    "proof-text: missing rollback release drift detail",
+  );
+
+  const driftedLogsResult = await runCli(["logs", appName, "20"], {
+    cwd: tempWorkspace,
+    allowFailure: true,
+  });
+  assert.equal(
+    driftedLogsResult.code,
+    0,
+    `drifted logs: expected exit 0, got ${driftedLogsResult.code}\n${driftedLogsResult.stdout}\n${driftedLogsResult.stderr}`,
+  );
+  assertIncludes(driftedLogsResult.stdout, "- rollbackReady: no", "logs: missing degraded rollback readiness");
+  assertIncludes(driftedLogsResult.stdout, "- rollbackConfidence: degraded", "logs: missing degraded rollback confidence");
+  assertIncludes(
+    driftedLogsResult.stdout,
+    "rollback target releaseId stale-release does not match replayed previous release release-runtime-smoke-app-a",
+    "logs: missing rollback release drift detail",
+  );
+
+  currentMetadata.rollbackTarget.releaseId = releaseA.releaseId;
+  currentMetadata.rollbackTarget.artifactRef = "docker://runtime-smoke-app:stale-artifact";
+  await writeFile(
+    currentMetadataPath,
+    `${JSON.stringify(currentMetadata, null, 2)}\n`,
+    "utf8",
+  );
+
+  const staleArtifactStatusResult = await runCli(["status", appName], {
+    cwd: tempWorkspace,
+    allowFailure: true,
+  });
+  assert.equal(
+    staleArtifactStatusResult.code,
+    0,
+    `stale artifact status: expected exit 0, got ${staleArtifactStatusResult.code}\n${staleArtifactStatusResult.stdout}\n${staleArtifactStatusResult.stderr}`,
+  );
+  assertIncludes(staleArtifactStatusResult.stdout, "- rollbackConfidence: degraded", "status: missing stale artifact rollback confidence");
+  assertIncludes(
+    staleArtifactStatusResult.stdout,
+    "rollback target artifactRef docker://runtime-smoke-app:stale-artifact does not match replayed previous artifact docker://runtime-smoke-app:release-a",
+    "status: missing stale artifact rollback detail",
+  );
+
+  currentMetadata.rollbackTarget.artifactRef = releaseA.releaseMetadata.artifactRef;
+  await writeFile(
+    currentMetadataPath,
+    `${JSON.stringify(currentMetadata, null, 2)}\n`,
+    "utf8",
+  );
 
   const receiptsDir = path.join(
     tempWorkspace,
@@ -308,6 +409,11 @@ try {
     degradedStatusResult.code,
     0,
     `degraded status: expected exit 0, got ${degradedStatusResult.code}\n${degradedStatusResult.stdout}\n${degradedStatusResult.stderr}`,
+  );
+  assertIncludes(
+    degradedStatusResult.stdout,
+    "- rollbackConfidence: degraded",
+    "status: missing replay-driven degraded rollback confidence",
   );
   assertIncludes(
     degradedStatusResult.stdout,
@@ -351,6 +457,11 @@ try {
   );
   assertIncludes(
     degradedProofResult.stdout,
+    "- rollbackConfidence: degraded",
+    "proof-text: missing replay-driven degraded rollback confidence",
+  );
+  assertIncludes(
+    degradedProofResult.stdout,
     "- receiptHealth: degraded (versionMismatch=1, unreadable=1)",
     "proof-text: missing degraded receipt health summary",
   );
@@ -379,6 +490,7 @@ try {
   assertIncludes(logsResult.stdout, `=== lifeline logs ${appName} ===`, "logs: missing evidence header");
   assertIncludes(logsResult.stdout, "- currentReleaseId: release-runtime-smoke-app-b", "logs: missing current release id");
   assertIncludes(logsResult.stdout, "- previousReleaseId: release-runtime-smoke-app-a", "logs: missing previous release id");
+  assertIncludes(logsResult.stdout, "- rollbackConfidence: degraded", "logs: missing degraded rollback confidence");
   assertIncludes(
     logsResult.stdout,
     "- receiptContractVersion: atlas.lifeline.release-receipt.v1",
@@ -396,6 +508,65 @@ try {
   );
   assertIncludes(logsResult.stdout, "=== lifeline up ", "logs: missing startup header");
   assertIncludes(logsResult.stdout, `runtime-smoke-app listening on ${port}`, "logs: missing app startup line");
+
+  const noPreviousWorkspace = await mkdtemp(
+    path.join(os.tmpdir(), "lifeline-release-no-previous-workspace-"),
+  );
+  const noPreviousPort = await getFreePort();
+  const { tempRoot: noPreviousFixtureRoot, manifestPath: noPreviousManifestPath } =
+    await createDisposableFixtureRoot(noPreviousPort);
+
+  try {
+    const upNoPrevious = await runCli(["up", noPreviousManifestPath], {
+      cwd: noPreviousWorkspace,
+      allowFailure: true,
+    });
+    assert.equal(
+      upNoPrevious.code,
+      0,
+      `no-previous up: expected exit 0, got ${upNoPrevious.code}\n${upNoPrevious.stdout}\n${upNoPrevious.stderr}`,
+    );
+
+    const noPreviousRelease = await persistWave1Release(
+      createReleaseManifest({
+        artifactRef: "docker://runtime-smoke-app:no-previous",
+        rollbackReleaseId: "bootstrap-release",
+        rollbackArtifactRef: "docker://runtime-smoke-app:bootstrap",
+        port: noPreviousPort,
+      }),
+      {
+        rootDir: noPreviousWorkspace,
+        releaseId: "release-runtime-smoke-app-only",
+        createdAt: "2026-04-26T01:00:00.000Z",
+        receiptAt: "2026-04-26T01:00:00.000Z",
+      },
+    );
+    await activateWave1Release(noPreviousWorkspace, appName, noPreviousRelease.releaseId, {
+      receiptAt: "2026-04-26T01:01:00.000Z",
+      checkHealth: async () => ({ ok: true, status: 200 }),
+    });
+
+    const noPreviousStatus = await runCli(["status", appName], {
+      cwd: noPreviousWorkspace,
+      allowFailure: true,
+    });
+    assert.equal(
+      noPreviousStatus.code,
+      0,
+      `no-previous status: expected exit 0, got ${noPreviousStatus.code}\n${noPreviousStatus.stdout}\n${noPreviousStatus.stderr}`,
+    );
+    assertIncludes(noPreviousStatus.stdout, "- rollbackReady: no", "status: missing no-previous rollback readiness");
+    assertIncludes(noPreviousStatus.stdout, "- rollbackConfidence: degraded", "status: missing no-previous rollback confidence");
+    assertIncludes(
+      noPreviousStatus.stdout,
+      "replayed previous-release evidence is missing",
+      "status: missing no-previous evidence detail",
+    );
+  } finally {
+    await runCli(["down", appName], { cwd: noPreviousWorkspace, allowFailure: true }).catch(() => undefined);
+    await removeTreeWithRetries(noPreviousWorkspace);
+    await removeTreeWithRetries(noPreviousFixtureRoot);
+  }
 
   cleanupNeeded = false;
   console.log("Wave 1 operator evidence deterministic verification passed.");
