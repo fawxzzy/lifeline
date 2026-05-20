@@ -145,6 +145,12 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
       note?: string;
     };
     rollback_ready: boolean;
+    rollback_confidence: {
+      status: string;
+      issues: string[];
+      replayed_previous_release_id?: string;
+      replayed_previous_artifact_ref?: string;
+    };
     receipt_health: {
       status: string;
       contract_version: string;
@@ -216,6 +222,22 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
             }
           : {}),
         rollback_ready: snapshot.release.rollbackReady,
+        rollback_confidence: {
+          status: snapshot.release.rollbackConfidence.status,
+          issues: snapshot.release.rollbackConfidence.issues,
+          ...(snapshot.release.rollbackConfidence.replayedPreviousReleaseId
+            ? {
+                replayed_previous_release_id:
+                  snapshot.release.rollbackConfidence.replayedPreviousReleaseId,
+              }
+            : {}),
+          ...(snapshot.release.rollbackConfidence.replayedPreviousArtifactRef
+            ? {
+                replayed_previous_artifact_ref:
+                  snapshot.release.rollbackConfidence.replayedPreviousArtifactRef,
+              }
+            : {}),
+        },
         receipt_health: {
           status: snapshot.release.receiptHealth.status,
           contract_version: snapshot.release.receiptHealth.contractVersion,
@@ -345,6 +367,7 @@ function printProofText(payload: ReturnType<typeof serializeProofPayload>): void
   }
   if (payload.release) {
     console.log(`- rollbackReady: ${payload.release.rollback_ready ? "yes" : "no"}`);
+    console.log(`- rollbackConfidence: ${payload.release.rollback_confidence.status}`);
     console.log(
       `- receiptContractVersion: ${payload.release.receipt_health.contract_version}`,
     );
@@ -361,6 +384,14 @@ function printProofText(payload: ReturnType<typeof serializeProofPayload>): void
     );
     console.log(
       `- releaseReplay: ${payload.release.replay_verification.ok ? "verified" : "degraded"} (${payload.release.replay_verification.applied_receipts} receipts applied)`,
+    );
+  }
+  if (
+    payload.release &&
+    payload.release.rollback_confidence.issues.length > 0
+  ) {
+    console.log(
+      `- rollbackConfidenceIssues: ${payload.release.rollback_confidence.issues.join("; ")}`,
     );
   }
   if (payload.release?.latest_receipt) {
@@ -540,6 +571,7 @@ export async function runStatusCommand(
   }
   if (releaseEvidence) {
     console.log(`- rollbackReady: ${releaseEvidence.rollbackReady ? "yes" : "no"}`);
+    console.log(`- rollbackConfidence: ${releaseEvidence.rollbackConfidence.status}`);
     console.log(
       `- receiptContractVersion: ${releaseEvidence.receiptHealth.contractVersion}`,
     );
@@ -548,6 +580,14 @@ export async function runStatusCommand(
     );
     console.log(
       `- releaseReplay: ${releaseEvidence.replayVerification.ok ? "verified" : "degraded"} (${releaseEvidence.replayVerification.appliedReceipts} receipts applied)`,
+    );
+  }
+  if (
+    releaseEvidence &&
+    releaseEvidence.rollbackConfidence.issues.length > 0
+  ) {
+    console.log(
+      `- rollbackConfidenceIssues: ${releaseEvidence.rollbackConfidence.issues.join("; ")}`,
     );
   }
   if (releaseEvidence?.latestReceipt) {

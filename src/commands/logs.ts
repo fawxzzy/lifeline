@@ -28,6 +28,13 @@ export async function runLogsCommand(
     if (releaseEvidence.previous) {
       console.log(`- previousReleaseId: ${releaseEvidence.previous.releaseId}`);
     }
+    console.log(`- rollbackReady: ${releaseEvidence.rollbackReady ? "yes" : "no"}`);
+    console.log(`- rollbackConfidence: ${releaseEvidence.rollbackConfidence.status}`);
+    if (releaseEvidence.rollbackConfidence.issues.length > 0) {
+      console.log(
+        `- rollbackConfidenceIssues: ${releaseEvidence.rollbackConfidence.issues.join("; ")}`,
+      );
+    }
     console.log(`- receiptContractVersion: ${releaseEvidence.receiptHealth.contractVersion}`);
     if (releaseEvidence.latestReceipt) {
       console.log(
