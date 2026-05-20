@@ -357,7 +357,7 @@ try {
   assertIncludes(degradedProofResult.stdout, "- releaseReplay: degraded (6 receipts applied)", "proof-text: missing degraded release replay state");
   assertIncludes(
     degradedProofResult.stdout,
-    "- releaseReplayIssues: current pointer mismatch: persisted=tampered-release replayed=release-runtime-smoke-app-b",
+    "current pointer mismatch: persisted=tampered-release replayed=release-runtime-smoke-app-b",
     "proof-text: missing degraded replay issue detail",
   );
   tamperedCurrent.releaseId = releaseB.releaseId;
