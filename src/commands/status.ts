@@ -126,6 +126,14 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
       release_id: string;
       path: string;
     };
+    replay_verification: {
+      ok: boolean;
+      issue_count: number;
+      issues: string[];
+      applied_receipts: number;
+      replayed_current_release_id?: string;
+      replayed_previous_release_id?: string;
+    };
     receipts_dir: string;
     latest_receipts: Array<{
       receipt_id: string;
@@ -163,6 +171,24 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
             }
           : {}),
         rollback_ready: snapshot.release.rollbackReady,
+        replay_verification: {
+          ok: snapshot.release.replayVerification.ok,
+          issue_count: snapshot.release.replayVerification.issueCount,
+          issues: snapshot.release.replayVerification.issues,
+          applied_receipts: snapshot.release.replayVerification.appliedReceipts,
+          ...(snapshot.release.replayVerification.replayedCurrentReleaseId
+            ? {
+                replayed_current_release_id:
+                  snapshot.release.replayVerification.replayedCurrentReleaseId,
+              }
+            : {}),
+          ...(snapshot.release.replayVerification.replayedPreviousReleaseId
+            ? {
+                replayed_previous_release_id:
+                  snapshot.release.replayVerification.replayedPreviousReleaseId,
+              }
+            : {}),
+        },
         receipts_dir: snapshot.release.receiptsDir,
         latest_receipts: snapshot.release.latestReceipts.map((receipt) => ({
           receipt_id: receipt.receiptId,
@@ -247,11 +273,23 @@ function printProofText(payload: ReturnType<typeof serializeProofPayload>): void
   }
   if (payload.release) {
     console.log(`- rollbackReady: ${payload.release.rollback_ready ? "yes" : "no"}`);
+    console.log(
+      `- releaseReplay: ${payload.release.replay_verification.ok ? "verified" : "degraded"} (${payload.release.replay_verification.applied_receipts} receipts applied)`,
+    );
   }
   if (payload.release?.latest_rollback_receipt) {
     const receipt = payload.release.latest_rollback_receipt;
     console.log(
       `- latestRollbackReceipt: ${receipt.action} ${receipt.status} ${receipt.release_id} (${receipt.path})`,
+    );
+  }
+  if (
+    payload.release &&
+    !payload.release.replay_verification.ok &&
+    payload.release.replay_verification.issues.length > 0
+  ) {
+    console.log(
+      `- releaseReplayIssues: ${payload.release.replay_verification.issues.join("; ")}`,
     );
   }
 }
@@ -410,10 +448,22 @@ export async function runStatusCommand(
   }
   if (releaseEvidence) {
     console.log(`- rollbackReady: ${releaseEvidence.rollbackReady ? "yes" : "no"}`);
+    console.log(
+      `- releaseReplay: ${releaseEvidence.replayVerification.ok ? "verified" : "degraded"} (${releaseEvidence.replayVerification.appliedReceipts} receipts applied)`,
+    );
   }
   if (releaseEvidence?.latestRollbackReceipt) {
     console.log(
       `- latestRollbackReceipt: ${releaseEvidence.latestRollbackReceipt.action} ${releaseEvidence.latestRollbackReceipt.status} ${releaseEvidence.latestRollbackReceipt.releaseId} (${releaseEvidence.latestRollbackReceipt.path})`,
+    );
+  }
+  if (
+    releaseEvidence &&
+    !releaseEvidence.replayVerification.ok &&
+    releaseEvidence.replayVerification.issues.length > 0
+  ) {
+    console.log(
+      `- releaseReplayIssues: ${releaseEvidence.replayVerification.issues.join("; ")}`,
     );
   }
   if (releaseEvidence?.latestReceipts.length) {

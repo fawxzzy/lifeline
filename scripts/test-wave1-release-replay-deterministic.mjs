@@ -243,6 +243,77 @@ try {
   assert.equal(replayOnly.replayedPrevious?.releaseId, releaseD.releaseId);
   assert.deepEqual(replayOnly.issues, []);
 
+  const receiptsDir = path.join(
+    tempRoot,
+    ".lifeline",
+    "releases",
+    appName,
+    "receipts",
+  );
+  const malformedReceiptPath = path.join(receiptsDir, "malformed.json");
+  await writeFile(malformedReceiptPath, "{not-json}\n", "utf8");
+
+  const malformedReplay = await replayWave1ReleaseReceipts(appName, tempRoot);
+  assert.equal(malformedReplay.replayedCurrent?.releaseId, releaseA.releaseId);
+  assert.equal(malformedReplay.replayedPrevious?.releaseId, releaseD.releaseId);
+  assert.match(
+    malformedReplay.issues.join("\n"),
+    /malformed\.json is not valid JSON/,
+  );
+  await rm(malformedReceiptPath, { force: true });
+
+  const wrongVersionReceiptPath = path.join(receiptsDir, "wrong-version.json");
+  await writeFile(
+    wrongVersionReceiptPath,
+    `${JSON.stringify(
+      {
+        contractVersion: "atlas.lifeline.release-receipt.v0",
+        receiptId: "wrong-version-receipt",
+        action: "activate",
+        status: "succeeded",
+        releaseId: releaseD.releaseId,
+        previousReleaseId: releaseA.releaseId,
+        createdAt: "2026-05-11T14:50:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  const wrongVersionReplay = await replayWave1ReleaseReceipts(appName, tempRoot);
+  assert.match(
+    wrongVersionReplay.issues.join("\n"),
+    /wrong-version\.json has unsupported contractVersion atlas\.lifeline\.release-receipt\.v0/,
+  );
+  await rm(wrongVersionReceiptPath, { force: true });
+
+  const duplicateReceiptPath = path.join(receiptsDir, "duplicate-id.json");
+  await writeFile(
+    duplicateReceiptPath,
+    `${JSON.stringify(
+      {
+        contractVersion: "atlas.lifeline.release-receipt.v1",
+        receiptId: releaseD.receipt.receiptId,
+        action: "activate",
+        status: "succeeded",
+        releaseId: releaseD.releaseId,
+        previousReleaseId: releaseA.releaseId,
+        createdAt: "2026-05-11T14:55:00.000Z",
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  const duplicateReplay = await replayWave1ReleaseReceipts(appName, tempRoot);
+  assert.match(
+    duplicateReplay.issues.join("\n"),
+    /duplicate release receipt id .*duplicate-id\.json/,
+  );
+  await rm(duplicateReceiptPath, { force: true });
+
   const tamperedVerification = await verifyWave1ReleaseReplay(appName, tempRoot);
   assert.equal(tamperedVerification.ok, false);
   assert.match(

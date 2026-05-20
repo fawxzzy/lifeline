@@ -1,6 +1,9 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+const WAVE1_RELEASE_RECEIPT_VERSION =
+  "atlas.lifeline.release-receipt.v1";
+
 export interface ReleaseReplayPointer {
   releaseId: string;
   updatedAt: string;
@@ -93,7 +96,7 @@ async function readReplayPointer(
 async function readReplayReceipts(
   rootDir: string,
   appName: string,
-): Promise<ReleaseReplayReceipt[]> {
+): Promise<{ receipts: ReleaseReplayReceipt[]; issues: string[] }> {
   const receiptsDir = path.join(
     rootDir,
     ".lifeline",
@@ -103,6 +106,8 @@ async function readReplayReceipts(
   );
   const entries = (await readdir(receiptsDir).catch(() => [])) as string[];
   const receipts: Array<ReleaseReplayReceipt & { sortKey: string }> = [];
+  const issues: string[] = [];
+  const seenReceiptIds = new Map<string, string>();
 
   for (const entry of entries) {
     if (!entry.endsWith(".json")) {
@@ -110,17 +115,49 @@ async function readReplayReceipts(
     }
 
     const receiptPath = path.join(receiptsDir, entry);
-    const parsed = await readJsonIfPresent(receiptPath);
+    const relativeReceiptPath = normalizeRelativePath(rootDir, receiptPath);
+    const raw = await readFile(receiptPath, "utf8").catch(() => "");
+    if (!raw) {
+      issues.push(`release receipt ${relativeReceiptPath} is unreadable or empty`);
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      issues.push(`release receipt ${relativeReceiptPath} is not valid JSON`);
+      continue;
+    }
+
     if (
       !isRecord(parsed) ||
+      !isNonEmptyString(parsed.contractVersion) ||
       !isNonEmptyString(parsed.receiptId) ||
       !isNonEmptyString(parsed.action) ||
       !isNonEmptyString(parsed.status) ||
       !isNonEmptyString(parsed.releaseId) ||
       !isNonEmptyString(parsed.createdAt)
     ) {
+      issues.push(`release receipt ${relativeReceiptPath} does not match the Wave 1 receipt contract`);
       continue;
     }
+
+    if (parsed.contractVersion !== WAVE1_RELEASE_RECEIPT_VERSION) {
+      issues.push(
+        `release receipt ${relativeReceiptPath} has unsupported contractVersion ${parsed.contractVersion}`,
+      );
+      continue;
+    }
+
+    const priorPath = seenReceiptIds.get(parsed.receiptId);
+    if (priorPath) {
+      issues.push(
+        `duplicate release receipt id ${parsed.receiptId} in ${priorPath} and ${relativeReceiptPath}`,
+      );
+      continue;
+    }
+    seenReceiptIds.set(parsed.receiptId, relativeReceiptPath);
 
     receipts.push({
       receiptId: parsed.receiptId,
@@ -137,14 +174,17 @@ async function readReplayReceipts(
       ...(isNonEmptyString(parsed.preservedPreviousReleaseId)
         ? { preservedPreviousReleaseId: parsed.preservedPreviousReleaseId }
         : {}),
-      path: normalizeRelativePath(rootDir, receiptPath),
+      path: relativeReceiptPath,
       sortKey: `${parsed.createdAt}-${entry}`,
     });
   }
 
-  return receipts
-    .sort((left, right) => left.sortKey.localeCompare(right.sortKey))
-    .map(({ sortKey: _sortKey, ...receipt }) => receipt);
+  return {
+    receipts: receipts
+      .sort((left, right) => left.sortKey.localeCompare(right.sortKey))
+      .map(({ sortKey: _sortKey, ...receipt }) => receipt),
+    issues,
+  };
 }
 
 function pointerIdsMatch(
@@ -260,8 +300,7 @@ export async function replayWave1ReleaseReceipts(
     appName,
     "receipts",
   );
-  const receipts = await readReplayReceipts(resolvedRoot, appName);
-  const issues: string[] = [];
+  const { receipts, issues } = await readReplayReceipts(resolvedRoot, appName);
   let state: ReleaseReplayState = {};
 
   for (const receipt of receipts) {

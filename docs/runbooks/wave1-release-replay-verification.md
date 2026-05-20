@@ -18,6 +18,7 @@ Release pointer lineage must be reproducible from immutable receipt history, not
 ## Pattern
 
 - replay receipts in chronological order
+- reject malformed, duplicate-id, or wrong-version release receipts as degraded evidence instead of silently skipping them
 - apply successful `activate` and `rollback` mutations to a derived current/previous state
 - treat failed mutation receipts as evidence that pointers should not have moved
 - compare replayed lineage to persisted pointer files and flag mismatches as degraded operator evidence

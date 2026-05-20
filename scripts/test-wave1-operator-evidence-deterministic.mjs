@@ -232,6 +232,7 @@ try {
   assertIncludes(statusResult.stdout, "- rollbackTarget.artifactRef: docker://runtime-smoke-app:release-a", "status: missing rollback artifact ref");
   assertIncludes(statusResult.stdout, "- rollbackTarget.strategy: restore", "status: missing rollback strategy");
   assertIncludes(statusResult.stdout, "- rollbackReady: yes", "status: missing rollback readiness");
+  assertIncludes(statusResult.stdout, "- releaseReplay: verified (6 receipts applied)", "status: missing release replay verification");
   assertIncludes(statusResult.stdout, "- latestRollbackReceipt: rollback succeeded release-runtime-smoke-app-a", "status: missing rollback rehearsal receipt");
   assertIncludes(statusResult.stdout, "- receiptsDir: .lifeline/releases/runtime-smoke-app/receipts", "status: missing receipts dir");
   assertIncludes(statusResult.stdout, "- receipt: activate succeeded release-runtime-smoke-app-b", "status: missing receipt summary");
@@ -249,7 +250,45 @@ try {
   assertIncludes(proofResult.stdout, "- previousReleaseId: release-runtime-smoke-app-a", "proof-text: missing previous release id");
   assertIncludes(proofResult.stdout, "- rollbackTarget: release-runtime-smoke-app-a (restore)", "proof-text: missing rollback target");
   assertIncludes(proofResult.stdout, "- rollbackReady: yes", "proof-text: missing rollback readiness");
+  assertIncludes(proofResult.stdout, "- releaseReplay: verified (6 receipts applied)", "proof-text: missing release replay verification");
   assertIncludes(proofResult.stdout, "- latestRollbackReceipt: rollback succeeded release-runtime-smoke-app-a", "proof-text: missing rollback rehearsal receipt");
+
+  const tamperedCurrentPointerPath = path.join(
+    tempWorkspace,
+    ".lifeline",
+    "releases",
+    appName,
+    "current.json",
+  );
+  const tamperedCurrent = JSON.parse(await readFile(tamperedCurrentPointerPath, "utf8"));
+  tamperedCurrent.releaseId = "tampered-release";
+  await writeFile(
+    tamperedCurrentPointerPath,
+    `${JSON.stringify(tamperedCurrent, null, 2)}\n`,
+    "utf8",
+  );
+
+  const degradedProofResult = await runCli(["status", appName, "--proof-text"], {
+    cwd: tempWorkspace,
+    allowFailure: true,
+  });
+  assert.equal(
+    degradedProofResult.code,
+    0,
+    `degraded proof-text: expected exit 0, got ${degradedProofResult.code}\n${degradedProofResult.stdout}\n${degradedProofResult.stderr}`,
+  );
+  assertIncludes(degradedProofResult.stdout, "- releaseReplay: degraded (6 receipts applied)", "proof-text: missing degraded release replay state");
+  assertIncludes(
+    degradedProofResult.stdout,
+    "- releaseReplayIssues: current pointer mismatch: persisted=tampered-release replayed=release-runtime-smoke-app-b",
+    "proof-text: missing degraded replay issue detail",
+  );
+  tamperedCurrent.releaseId = releaseB.releaseId;
+  await writeFile(
+    tamperedCurrentPointerPath,
+    `${JSON.stringify(tamperedCurrent, null, 2)}\n`,
+    "utf8",
+  );
 
   const logsResult = await runCli(["logs", appName, "20"], {
     cwd: tempWorkspace,
