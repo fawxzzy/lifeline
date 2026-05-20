@@ -1,6 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { verifyWave1ReleaseReplay } from "./release-replay.js";
+
 export interface ReleasePointer {
   releaseId: string;
   updatedAt: string;
@@ -39,6 +41,14 @@ export interface ReleaseOperatorEvidence {
   rollbackReady: boolean;
   latestRollbackReceipt?: ReleaseReceiptSummary;
   latestReceipts: ReleaseReceiptSummary[];
+  replayVerification: {
+    ok: boolean;
+    issueCount: number;
+    issues: string[];
+    appliedReceipts: number;
+    replayedCurrentReleaseId?: string;
+    replayedPreviousReleaseId?: string;
+  };
 }
 
 interface ReleaseMetadataLike {
@@ -221,7 +231,10 @@ export async function readReleaseOperatorEvidence(
   const currentMetadata = current?.metadataPath
     ? await readReleaseMetadata(path.join(resolvedRoot, current.metadataPath))
     : undefined;
-  const latestReceipts = await readLatestReceipts(resolvedRoot, receiptsDir);
+  const [latestReceipts, replayVerification] = await Promise.all([
+    readLatestReceipts(resolvedRoot, receiptsDir),
+    verifyWave1ReleaseReplay(appName, resolvedRoot),
+  ]);
   const latestRollbackReceipt = latestReceipts.find(
     (receipt) => receipt.action === "rollback",
   );
@@ -242,5 +255,17 @@ export async function readReleaseOperatorEvidence(
     receiptsDir: normalizeRelativePath(resolvedRoot, receiptsDir),
     ...(latestRollbackReceipt ? { latestRollbackReceipt } : {}),
     latestReceipts,
+    replayVerification: {
+      ok: replayVerification.ok,
+      issueCount: replayVerification.issues.length,
+      issues: replayVerification.issues,
+      appliedReceipts: replayVerification.appliedReceipts.length,
+      ...(replayVerification.replayedCurrent
+        ? { replayedCurrentReleaseId: replayVerification.replayedCurrent.releaseId }
+        : {}),
+      ...(replayVerification.replayedPrevious
+        ? { replayedPreviousReleaseId: replayVerification.replayedPrevious.releaseId }
+        : {}),
+    },
   };
 }

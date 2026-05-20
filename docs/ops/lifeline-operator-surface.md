@@ -46,6 +46,7 @@ Useful signals:
 - Healthy state requires the supervisor, the managed child process, port ownership, and a successful health check.
 - The status output always reports the local healthcheck URL, last known status, log path, manifest path, restart policy, and crash-loop state.
 - When Wave 1 release state exists, `lifeline status` also reports the current release id, previous release id, current artifact ref, rollback target, rollback readiness, the latest rollback receipt when present, and recent release receipts.
+- `lifeline status` and `lifeline status --proof-text` also report `releaseReplay` so operators can see whether immutable release receipts still reconstruct the persisted current/previous pointers.
 - `lifeline status <app-name> --proof-text` gives a compact operator brief.
 - `lifeline status <app-name> --proof-gate` makes the proof brief fail closed.
 
@@ -57,6 +58,7 @@ Useful signals:
 - `- rollbackTarget.releaseId:` and `- receipt:` lines show the concrete rollback target and recent release receipts.
 - `- rollbackReady: yes` means Lifeline can see current, previous, and rollback-target release metadata.
 - `- latestRollbackReceipt:` proves a rollback rehearsal or rollback action has emitted release receipt evidence.
+- `- releaseReplay:` must stay `verified`; a `degraded` value means receipt history no longer reconstructs the persisted release pointers cleanly.
 - `blockedReason` or `- health: managed app process not running` means cutover should stop.
 
 ## Receipt contract
