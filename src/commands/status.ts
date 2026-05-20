@@ -85,6 +85,32 @@ function deriveProof(snapshot: RuntimeSnapshot): {
   };
 }
 
+function formatReceiptHealthSummary(
+  health: NonNullable<RuntimeSnapshot["release"]>["receiptHealth"],
+): string {
+  if (health.status === "ok") {
+    return "ok";
+  }
+
+  const reasons = [];
+  if (health.versionMismatchCount > 0) {
+    reasons.push(`versionMismatch=${health.versionMismatchCount}`);
+  }
+  if (health.invalidReceiptCount > 0) {
+    reasons.push(`invalid=${health.invalidReceiptCount}`);
+  }
+  if (health.unreadableReceiptCount > 0) {
+    reasons.push(`unreadable=${health.unreadableReceiptCount}`);
+  }
+  if (health.missingLatestReceipt) {
+    reasons.push("missingLatestReceipt=yes");
+  }
+
+  return reasons.length > 0
+    ? `degraded (${reasons.join(", ")})`
+    : "degraded";
+}
+
 function serializeProofPayload(snapshot: RuntimeSnapshot): {
   mode: "proof";
   proof: {
@@ -119,11 +145,29 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
       note?: string;
     };
     rollback_ready: boolean;
+    receipt_health: {
+      status: string;
+      contract_version: string;
+      valid_receipt_count: number;
+      version_mismatch_count: number;
+      invalid_receipt_count: number;
+      unreadable_receipt_count: number;
+      missing_latest_receipt: boolean;
+    };
+    latest_receipt?: {
+      receipt_id: string;
+      action: string;
+      status: string;
+      release_id: string;
+      contract_version: string;
+      path: string;
+    };
     latest_rollback_receipt?: {
       receipt_id: string;
       action: string;
       status: string;
       release_id: string;
+      contract_version: string;
       path: string;
     };
     replay_verification: {
@@ -140,6 +184,7 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
       action: string;
       status: string;
       release_id: string;
+      contract_version: string;
       path: string;
     }>;
   };
@@ -171,6 +216,18 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
             }
           : {}),
         rollback_ready: snapshot.release.rollbackReady,
+        receipt_health: {
+          status: snapshot.release.receiptHealth.status,
+          contract_version: snapshot.release.receiptHealth.contractVersion,
+          valid_receipt_count: snapshot.release.receiptHealth.validReceiptCount,
+          version_mismatch_count:
+            snapshot.release.receiptHealth.versionMismatchCount,
+          invalid_receipt_count: snapshot.release.receiptHealth.invalidReceiptCount,
+          unreadable_receipt_count:
+            snapshot.release.receiptHealth.unreadableReceiptCount,
+          missing_latest_receipt:
+            snapshot.release.receiptHealth.missingLatestReceipt,
+        },
         replay_verification: {
           ok: snapshot.release.replayVerification.ok,
           issue_count: snapshot.release.replayVerification.issueCount,
@@ -195,8 +252,21 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
           action: receipt.action,
           status: receipt.status,
           release_id: receipt.releaseId,
+          contract_version: receipt.contractVersion,
           path: receipt.path,
         })),
+        ...(snapshot.release.latestReceipt
+          ? {
+              latest_receipt: {
+                receipt_id: snapshot.release.latestReceipt.receiptId,
+                action: snapshot.release.latestReceipt.action,
+                status: snapshot.release.latestReceipt.status,
+                release_id: snapshot.release.latestReceipt.releaseId,
+                contract_version: snapshot.release.latestReceipt.contractVersion,
+                path: snapshot.release.latestReceipt.path,
+              },
+            }
+          : {}),
         ...(snapshot.release.latestRollbackReceipt
           ? {
               latest_rollback_receipt: {
@@ -204,6 +274,8 @@ function serializeProofPayload(snapshot: RuntimeSnapshot): {
                 action: snapshot.release.latestRollbackReceipt.action,
                 status: snapshot.release.latestRollbackReceipt.status,
                 release_id: snapshot.release.latestRollbackReceipt.releaseId,
+                contract_version:
+                  snapshot.release.latestRollbackReceipt.contractVersion,
                 path: snapshot.release.latestRollbackReceipt.path,
               },
             }
@@ -274,7 +346,27 @@ function printProofText(payload: ReturnType<typeof serializeProofPayload>): void
   if (payload.release) {
     console.log(`- rollbackReady: ${payload.release.rollback_ready ? "yes" : "no"}`);
     console.log(
+      `- receiptContractVersion: ${payload.release.receipt_health.contract_version}`,
+    );
+    console.log(
+      `- receiptHealth: ${formatReceiptHealthSummary({
+        status: payload.release.receipt_health.status as "ok" | "degraded",
+        contractVersion: payload.release.receipt_health.contract_version,
+        validReceiptCount: payload.release.receipt_health.valid_receipt_count,
+        versionMismatchCount: payload.release.receipt_health.version_mismatch_count,
+        invalidReceiptCount: payload.release.receipt_health.invalid_receipt_count,
+        unreadableReceiptCount: payload.release.receipt_health.unreadable_receipt_count,
+        missingLatestReceipt: payload.release.receipt_health.missing_latest_receipt,
+      })}`,
+    );
+    console.log(
       `- releaseReplay: ${payload.release.replay_verification.ok ? "verified" : "degraded"} (${payload.release.replay_verification.applied_receipts} receipts applied)`,
+    );
+  }
+  if (payload.release?.latest_receipt) {
+    const receipt = payload.release.latest_receipt;
+    console.log(
+      `- latestReceipt: ${receipt.receipt_id} ${receipt.action} ${receipt.status} ${receipt.release_id} (${receipt.path})`,
     );
   }
   if (payload.release?.latest_rollback_receipt) {
@@ -449,7 +541,18 @@ export async function runStatusCommand(
   if (releaseEvidence) {
     console.log(`- rollbackReady: ${releaseEvidence.rollbackReady ? "yes" : "no"}`);
     console.log(
+      `- receiptContractVersion: ${releaseEvidence.receiptHealth.contractVersion}`,
+    );
+    console.log(
+      `- receiptHealth: ${formatReceiptHealthSummary(releaseEvidence.receiptHealth)}`,
+    );
+    console.log(
       `- releaseReplay: ${releaseEvidence.replayVerification.ok ? "verified" : "degraded"} (${releaseEvidence.replayVerification.appliedReceipts} receipts applied)`,
+    );
+  }
+  if (releaseEvidence?.latestReceipt) {
+    console.log(
+      `- latestReceipt: ${releaseEvidence.latestReceipt.receiptId} ${releaseEvidence.latestReceipt.action} ${releaseEvidence.latestReceipt.status} ${releaseEvidence.latestReceipt.releaseId} (${releaseEvidence.latestReceipt.path})`,
     );
   }
   if (releaseEvidence?.latestRollbackReceipt) {

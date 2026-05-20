@@ -46,11 +46,14 @@ async function readLogLines(filePath) {
     .filter((line) => line.length > 0);
 }
 
-async function runCli(cwd, args) {
+async function runCli(cwd, args, envOverrides = undefined) {
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, [cliPath, ...args], {
       cwd,
-      env: process.env,
+      env: {
+        ...process.env,
+        ...(envOverrides ?? {}),
+      },
     });
     return { code: 0, stdout, stderr };
   } catch (error) {
@@ -149,11 +152,33 @@ try {
   const firstMetadata = JSON.parse(await readFile(firstMetadataPath, "utf8"));
   assert.equal(firstMetadata.releaseId, firstReleaseId);
 
+  const unconfirmedActivateResult = await runCli(
+    tempRoot,
+    [
+      "release",
+      "activate",
+      "lifeline-pilot",
+      firstReleaseId,
+    ],
+    {
+      CI: "true",
+      LIFELINE_RELEASE_CONFIRMATION_CONTEXT: "interactive",
+    },
+  );
+  assert.equal(unconfirmedActivateResult.code, 1);
+  assert.match(
+    unconfirmedActivateResult.stderr,
+    new RegExp(
+      `Re-run with:\\s+lifeline release activate lifeline-pilot ${firstReleaseId} --yes`,
+    ),
+  );
+
   const activateFirstResult = await runCli(tempRoot, [
     "release",
     "activate",
     "lifeline-pilot",
     firstReleaseId,
+    "--confirm",
   ]);
   assert.equal(activateFirstResult.code, 0, activateFirstResult.stderr);
   const activatedFirst = parseJsonOutput(activateFirstResult.stdout);
@@ -189,6 +214,7 @@ try {
     "activate",
     "lifeline-pilot",
     secondReleaseId,
+    "--yes",
   ]);
   assert.equal(activateSecondResult.code, 0, activateSecondResult.stderr);
   const activatedSecond = parseJsonOutput(activateSecondResult.stdout);
@@ -208,10 +234,29 @@ try {
     "postActivate",
   ]);
 
+  const unconfirmedRollbackResult = await runCli(
+    tempRoot,
+    [
+      "release",
+      "rollback",
+      "lifeline-pilot",
+    ],
+    {
+      CI: "true",
+      LIFELINE_RELEASE_CONFIRMATION_CONTEXT: "interactive",
+    },
+  );
+  assert.equal(unconfirmedRollbackResult.code, 1);
+  assert.match(
+    unconfirmedRollbackResult.stderr,
+    /Re-run with:\s+lifeline release rollback lifeline-pilot --yes/,
+  );
+
   const rollbackResult = await runCli(tempRoot, [
     "release",
     "rollback",
     "lifeline-pilot",
+    "--yes",
   ]);
   assert.equal(rollbackResult.code, 0, rollbackResult.stderr);
   const rolledBack = parseJsonOutput(rollbackResult.stdout);

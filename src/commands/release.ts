@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 type ReleaseAction = "plan" | "persist" | "activate" | "rollback";
+type ReleaseMutationAction = "activate" | "rollback";
 
 type Wave1ReleasePlanResult = {
   validation: {
@@ -34,7 +35,7 @@ type Wave1ReleaseModules = {
 
 function printReleaseUsage(): void {
   console.error(
-    "Usage:\n  lifeline release plan <deploy-manifest>\n  lifeline release persist <deploy-manifest>\n  lifeline release activate <app-name> <release-id>\n  lifeline release rollback <app-name>",
+    "Usage:\n  lifeline release plan <deploy-manifest>\n  lifeline release persist <deploy-manifest>\n  lifeline release activate <app-name> <release-id> [--yes|--confirm]\n  lifeline release rollback <app-name> [--yes|--confirm]",
   );
 }
 
@@ -89,6 +90,84 @@ function exitCodeForMutationResult(result: Wave1ReleaseMutationResult): number {
   return result.ok ? 0 : 1;
 }
 
+function isTruthyEnvValue(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized !== "" && normalized !== "0" && normalized !== "false";
+}
+
+function resolveReleaseConfirmationContext(): "interactive" | "non-interactive" {
+  const override = process.env.LIFELINE_RELEASE_CONFIRMATION_CONTEXT;
+  if (override === "interactive" || override === "non-interactive") {
+    return override;
+  }
+
+  const standardStreams = process as unknown as {
+    stdin?: { isTTY?: boolean };
+    stdout?: { isTTY?: boolean };
+  };
+  return standardStreams.stdin?.isTTY && standardStreams.stdout?.isTTY
+    ? "interactive"
+    : "non-interactive";
+}
+
+function bypassesReleaseConfirmation(): boolean {
+  const explicitContext = process.env.LIFELINE_RELEASE_CONFIRMATION_CONTEXT;
+  if (
+    explicitContext === "interactive" ||
+    explicitContext === "non-interactive"
+  ) {
+    return explicitContext === "non-interactive";
+  }
+
+  if (isTruthyEnvValue(process.env.LIFELINE_DETERMINISTIC_TEST)) {
+    return true;
+  }
+
+  if (isTruthyEnvValue(process.env.CI)) {
+    return true;
+  }
+
+  return resolveReleaseConfirmationContext() === "non-interactive";
+}
+
+function parseReleaseMutationArgs(args: string[]): {
+  positional: string[];
+  confirmed: boolean;
+} {
+  const positional: string[] = [];
+  let confirmed = false;
+
+  for (const arg of args) {
+    if (arg === "--yes" || arg === "--confirm") {
+      confirmed = true;
+      continue;
+    }
+
+    positional.push(arg);
+  }
+
+  return { positional, confirmed };
+}
+
+function ensureReleaseMutationConfirmation(
+  action: ReleaseMutationAction,
+  commandArgs: string[],
+  confirmed: boolean,
+): number | undefined {
+  if (confirmed || bypassesReleaseConfirmation()) {
+    return undefined;
+  }
+
+  console.error(
+    `Release pointer mutation requires explicit confirmation for '${action}'. Re-run with:\n  lifeline release ${action} ${commandArgs.join(" ")} --yes`,
+  );
+  return 1;
+}
+
 export async function runReleaseCommand(args: string[]): Promise<number> {
   try {
     const [action, ...rest] = args;
@@ -130,12 +209,22 @@ export async function runReleaseCommand(args: string[]): Promise<number> {
     }
 
     if (action === "activate") {
-      const appName = rest[0];
-      const releaseId = rest[1];
+      const { positional, confirmed } = parseReleaseMutationArgs(rest);
+      const appName = positional[0];
+      const releaseId = positional[1];
       if (!appName || !releaseId) {
         console.error("Missing app name or release id.");
         printReleaseUsage();
         return 1;
+      }
+
+      const confirmationResult = ensureReleaseMutationConfirmation(
+        action,
+        [appName, releaseId],
+        confirmed,
+      );
+      if (typeof confirmationResult === "number") {
+        return confirmationResult;
       }
 
       const result = await modules.activateWave1Release(
@@ -147,11 +236,21 @@ export async function runReleaseCommand(args: string[]): Promise<number> {
       return exitCodeForMutationResult(result);
     }
 
-    const appName = rest[0];
+    const { positional, confirmed } = parseReleaseMutationArgs(rest);
+    const appName = positional[0];
     if (!appName) {
       console.error("Missing app name.");
       printReleaseUsage();
       return 1;
+    }
+
+    const confirmationResult = ensureReleaseMutationConfirmation(
+      action,
+      [appName],
+      confirmed,
+    );
+    if (typeof confirmationResult === "number") {
+      return confirmationResult;
     }
 
     const result = await modules.rollbackWave1Release(rootDir, appName);
