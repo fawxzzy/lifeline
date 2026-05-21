@@ -18,6 +18,14 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function pushIssue(issues, path, message) {
+  issues.push({ path, message });
+}
+
 function stableJsonValue(value) {
   if (Array.isArray(value)) {
     return value.map((entry) => stableJsonValue(entry));
@@ -37,6 +45,502 @@ function stableJsonValue(value) {
 
 function stableJsonStringify(value) {
   return JSON.stringify(stableJsonValue(value), null, 2);
+}
+
+const SUPPORTED_RELEASE_RECEIPT_ACTIONS = ["planned", "activate", "rollback"];
+const SUPPORTED_RELEASE_RECEIPT_STATUSES = ["planned", "succeeded", "failed"];
+const SUPPORTED_RELEASE_PHASE_STATUSES = ["succeeded", "failed"];
+const SUPPORTED_RELEASE_RECEIPT_FAILURE_PHASES = [
+  "preActivate",
+  "healthcheck",
+  "postActivate",
+  "preRollback",
+];
+const SUPPORTED_ROLLBACK_STRATEGIES = ["redeploy", "restore"];
+const SUPPORTED_SOURCE_ADAPTER_KINDS = ["artifactRef", "imageRef", "branch"];
+
+function validateReleaseTarget(receipt, issues) {
+  if (!isRecord(receipt.releaseTarget)) {
+    pushIssue(issues, "releaseTarget", "must be an object");
+    return;
+  }
+
+  if (receipt.releaseTarget.kind !== "single-host-immutable") {
+    pushIssue(issues, "releaseTarget.kind", "must equal single-host-immutable");
+  }
+
+  if (!isNonEmptyString(receipt.releaseTarget.releaseId)) {
+    pushIssue(issues, "releaseTarget.releaseId", "must be a non-empty string");
+  }
+
+  if (!isNonEmptyString(receipt.releaseTarget.artifactRef)) {
+    pushIssue(issues, "releaseTarget.artifactRef", "must be a non-empty string");
+  }
+}
+
+function validateRollbackTarget(receipt, issues) {
+  if (!isRecord(receipt.rollbackTarget)) {
+    pushIssue(issues, "rollbackTarget", "must be an object");
+    return;
+  }
+
+  if (!isNonEmptyString(receipt.rollbackTarget.releaseId)) {
+    pushIssue(issues, "rollbackTarget.releaseId", "must be a non-empty string");
+  }
+
+  if (!isNonEmptyString(receipt.rollbackTarget.artifactRef)) {
+    pushIssue(issues, "rollbackTarget.artifactRef", "must be a non-empty string");
+  }
+
+  if (
+    !isNonEmptyString(receipt.rollbackTarget.strategy) ||
+    !SUPPORTED_ROLLBACK_STRATEGIES.includes(receipt.rollbackTarget.strategy)
+  ) {
+    pushIssue(
+      issues,
+      "rollbackTarget.strategy",
+      `must be one of: ${SUPPORTED_ROLLBACK_STRATEGIES.join(", ")}`,
+    );
+  }
+
+  if (
+    receipt.rollbackTarget.note !== undefined &&
+    !isNonEmptyString(receipt.rollbackTarget.note)
+  ) {
+    pushIssue(issues, "rollbackTarget.note", "must be a non-empty string");
+  }
+}
+
+function validateSourceAdapter(receipt, issues) {
+  if (receipt.sourceAdapter === undefined) {
+    return;
+  }
+
+  if (!isRecord(receipt.sourceAdapter)) {
+    pushIssue(issues, "sourceAdapter", "must be an object");
+    return;
+  }
+
+  if (
+    !isNonEmptyString(receipt.sourceAdapter.kind) ||
+    !SUPPORTED_SOURCE_ADAPTER_KINDS.includes(receipt.sourceAdapter.kind)
+  ) {
+    pushIssue(
+      issues,
+      "sourceAdapter.kind",
+      `must be one of: ${SUPPORTED_SOURCE_ADAPTER_KINDS.join(", ")}`,
+    );
+  }
+
+  if (!isNonEmptyString(receipt.sourceAdapter.canonicalArtifactRef)) {
+    pushIssue(
+      issues,
+      "sourceAdapter.canonicalArtifactRef",
+      "must be a non-empty string",
+    );
+  }
+
+  if (
+    receipt.sourceAdapter.kind === "artifactRef" &&
+    !isNonEmptyString(receipt.sourceAdapter.artifactRef)
+  ) {
+    pushIssue(
+      issues,
+      "sourceAdapter.artifactRef",
+      "must be a non-empty string",
+    );
+  }
+
+  if (
+    receipt.sourceAdapter.kind === "imageRef" &&
+    !isNonEmptyString(receipt.sourceAdapter.imageRef)
+  ) {
+    pushIssue(issues, "sourceAdapter.imageRef", "must be a non-empty string");
+  }
+
+  if (receipt.sourceAdapter.kind === "branch") {
+    if (!isNonEmptyString(receipt.sourceAdapter.repo)) {
+      pushIssue(issues, "sourceAdapter.repo", "must be a non-empty string");
+    }
+
+    if (!isNonEmptyString(receipt.sourceAdapter.branch)) {
+      pushIssue(issues, "sourceAdapter.branch", "must be a non-empty string");
+    }
+  }
+}
+
+function validateHealth(receipt, issues) {
+  if (receipt.health === undefined) {
+    return;
+  }
+
+  if (!isRecord(receipt.health)) {
+    pushIssue(issues, "health", "must be an object");
+    return;
+  }
+
+  if (typeof receipt.health.ok !== "boolean") {
+    pushIssue(issues, "health.ok", "must be a boolean");
+  }
+
+  if (
+    receipt.health.status !== undefined &&
+    !Number.isInteger(receipt.health.status)
+  ) {
+    pushIssue(issues, "health.status", "must be an integer");
+  }
+
+  if (
+    receipt.health.error !== undefined &&
+    !isNonEmptyString(receipt.health.error)
+  ) {
+    pushIssue(issues, "health.error", "must be a non-empty string");
+  }
+}
+
+function validatePhaseCommands(commands, phasePath, issues) {
+  if (!Array.isArray(commands)) {
+    pushIssue(issues, `${phasePath}.commands`, "must be an array");
+    return;
+  }
+
+  commands.forEach((commandResult, index) => {
+    const commandPath = `${phasePath}.commands.${index}`;
+    if (!isRecord(commandResult)) {
+      pushIssue(issues, commandPath, "must be an object");
+      return;
+    }
+
+    if (!isNonEmptyString(commandResult.command)) {
+      pushIssue(issues, `${commandPath}.command`, "must be a non-empty string");
+    }
+
+    if (
+      !isNonEmptyString(commandResult.status) ||
+      !SUPPORTED_RELEASE_PHASE_STATUSES.includes(commandResult.status)
+    ) {
+      pushIssue(
+        issues,
+        `${commandPath}.status`,
+        `must be one of: ${SUPPORTED_RELEASE_PHASE_STATUSES.join(", ")}`,
+      );
+    }
+
+    if (!Number.isInteger(commandResult.exitCode)) {
+      pushIssue(issues, `${commandPath}.exitCode`, "must be an integer");
+    }
+
+    if (
+      commandResult.signal !== undefined &&
+      !isNonEmptyString(commandResult.signal)
+    ) {
+      pushIssue(issues, `${commandPath}.signal`, "must be a non-empty string");
+    }
+  });
+}
+
+function validatePhaseResult(phaseEvidence, phaseName, issues) {
+  const phase = phaseEvidence?.[phaseName];
+  if (!isRecord(phase)) {
+    pushIssue(issues, `phaseEvidence.${phaseName}`, "must be an object");
+    return;
+  }
+
+  if (phase.phase !== phaseName) {
+    pushIssue(issues, `phaseEvidence.${phaseName}.phase`, `must equal ${phaseName}`);
+  }
+
+  if (
+    !isNonEmptyString(phase.status) ||
+    !SUPPORTED_RELEASE_PHASE_STATUSES.includes(phase.status)
+  ) {
+    pushIssue(
+      issues,
+      `phaseEvidence.${phaseName}.status`,
+      `must be one of: ${SUPPORTED_RELEASE_PHASE_STATUSES.join(", ")}`,
+    );
+  }
+
+  validatePhaseCommands(phase.commands, `phaseEvidence.${phaseName}`, issues);
+}
+
+function validateLineage(receipt, issues) {
+  if (receipt.lineage === undefined) {
+    return;
+  }
+
+  if (!isRecord(receipt.lineage)) {
+    pushIssue(issues, "lineage", "must be an object");
+    return;
+  }
+
+  if (
+    receipt.lineage.promotedFromReleaseId !== undefined &&
+    !isNonEmptyString(receipt.lineage.promotedFromReleaseId)
+  ) {
+    pushIssue(issues, "lineage.promotedFromReleaseId", "must be a non-empty string");
+  }
+
+  if (!isNonEmptyString(receipt.lineage.promotedToReleaseId)) {
+    pushIssue(issues, "lineage.promotedToReleaseId", "must be a non-empty string");
+  }
+}
+
+function validateOptionalStringField(receipt, fieldName, issues) {
+  if (receipt[fieldName] !== undefined && !isNonEmptyString(receipt[fieldName])) {
+    pushIssue(issues, fieldName, "must be a non-empty string");
+  }
+}
+
+function validatePhaseEvidence(receipt, issues) {
+  if (receipt.phaseEvidence === undefined) {
+    return;
+  }
+
+  if (!isRecord(receipt.phaseEvidence)) {
+    pushIssue(issues, "phaseEvidence", "must be an object");
+    return;
+  }
+
+  if (receipt.action === "activate") {
+    validatePhaseResult(receipt.phaseEvidence, "preActivate", issues);
+
+    if (
+      receipt.status === "succeeded" ||
+      receipt.failedPhase === "postActivate"
+    ) {
+      validatePhaseResult(receipt.phaseEvidence, "postActivate", issues);
+    }
+  }
+
+  if (receipt.action === "rollback") {
+    validatePhaseResult(receipt.phaseEvidence, "preRollback", issues);
+  }
+}
+
+export function validateWave1ReleaseReceipt(value) {
+  const issues = [];
+
+  if (!isRecord(value)) {
+    return {
+      issues: [{ path: "$", message: "release receipt must be a JSON object" }],
+    };
+  }
+
+  if (value.contractVersion !== WAVE1_RELEASE_RECEIPT_VERSION) {
+    pushIssue(
+      issues,
+      "contractVersion",
+      `must equal ${WAVE1_RELEASE_RECEIPT_VERSION}`,
+    );
+  }
+
+  if (!isNonEmptyString(value.receiptId)) {
+    pushIssue(issues, "receiptId", "must be a non-empty string");
+  }
+
+  if (
+    !isNonEmptyString(value.action) ||
+    !SUPPORTED_RELEASE_RECEIPT_ACTIONS.includes(value.action)
+  ) {
+    pushIssue(
+      issues,
+      "action",
+      `must be one of: ${SUPPORTED_RELEASE_RECEIPT_ACTIONS.join(", ")}`,
+    );
+  }
+
+  if (
+    !isNonEmptyString(value.status) ||
+    !SUPPORTED_RELEASE_RECEIPT_STATUSES.includes(value.status)
+  ) {
+    pushIssue(
+      issues,
+      "status",
+      `must be one of: ${SUPPORTED_RELEASE_RECEIPT_STATUSES.join(", ")}`,
+    );
+  }
+
+  [
+    "appName",
+    "releaseId",
+    "createdAt",
+    "releaseDirectory",
+    "releaseMetadataPath",
+    "currentPointerPath",
+    "previousPointerPath",
+  ].forEach((fieldName) => {
+    if (!isNonEmptyString(value[fieldName])) {
+      pushIssue(issues, fieldName, "must be a non-empty string");
+    }
+  });
+
+  validateReleaseTarget(value, issues);
+  validateRollbackTarget(value, issues);
+  validateSourceAdapter(value, issues);
+  validateHealth(value, issues);
+  validatePhaseEvidence(value, issues);
+  validateLineage(value, issues);
+
+  [
+    "previousReleaseId",
+    "failedPhase",
+    "preservedCurrentReleaseId",
+    "preservedPreviousReleaseId",
+  ].forEach((fieldName) => validateOptionalStringField(value, fieldName, issues));
+
+  if (
+    value.revertedPointers !== undefined &&
+    typeof value.revertedPointers !== "boolean"
+  ) {
+    pushIssue(issues, "revertedPointers", "must be a boolean");
+  }
+
+  if (value.action === "planned" && value.status !== "planned") {
+    pushIssue(issues, "status", "planned receipts must use planned status");
+  }
+
+  if (
+    (value.action === "activate" || value.action === "rollback") &&
+    value.status === "planned"
+  ) {
+    pushIssue(issues, "status", `${value.action} receipts must not use planned status`);
+  }
+
+  if (value.action === "activate" && value.status === "succeeded") {
+    if (value.health === undefined) {
+      pushIssue(issues, "health", "is required for successful activate receipts");
+    }
+
+    if (value.phaseEvidence === undefined) {
+      pushIssue(
+        issues,
+        "phaseEvidence",
+        "is required for successful activate receipts",
+      );
+    }
+
+    if (value.lineage === undefined) {
+      pushIssue(issues, "lineage", "is required for successful activate receipts");
+    }
+  }
+
+  if (value.action === "activate" && value.status === "failed") {
+    if (!isNonEmptyString(value.failedPhase)) {
+      pushIssue(issues, "failedPhase", "is required for failed activate receipts");
+    } else if (
+      !["preActivate", "healthcheck", "postActivate"].includes(value.failedPhase)
+    ) {
+      pushIssue(
+        issues,
+        "failedPhase",
+        "must be one of: preActivate, healthcheck, postActivate",
+      );
+    }
+
+    if (value.phaseEvidence === undefined) {
+      pushIssue(issues, "phaseEvidence", "is required for failed activate receipts");
+    }
+
+    if (value.failedPhase === "healthcheck" && value.health === undefined) {
+      pushIssue(
+        issues,
+        "health",
+        "is required when activate failedPhase is healthcheck",
+      );
+    }
+  }
+
+  if (value.action === "rollback") {
+    if (!isNonEmptyString(value.previousReleaseId)) {
+      pushIssue(
+        issues,
+        "previousReleaseId",
+        "is required for rollback receipts",
+      );
+    }
+  }
+
+  if (value.action === "rollback" && value.status === "succeeded") {
+    if (value.health === undefined) {
+      pushIssue(issues, "health", "is required for successful rollback receipts");
+    }
+
+    if (value.phaseEvidence === undefined) {
+      pushIssue(
+        issues,
+        "phaseEvidence",
+        "is required for successful rollback receipts",
+      );
+    }
+
+    if (value.lineage === undefined) {
+      pushIssue(issues, "lineage", "is required for successful rollback receipts");
+    } else if (!isNonEmptyString(value.lineage.promotedFromReleaseId)) {
+      pushIssue(
+        issues,
+        "lineage.promotedFromReleaseId",
+        "is required for successful rollback receipts",
+      );
+    }
+  }
+
+  if (value.action === "rollback" && value.status === "failed") {
+    if (!isNonEmptyString(value.failedPhase)) {
+      pushIssue(issues, "failedPhase", "is required for failed rollback receipts");
+    } else if (!["preRollback", "healthcheck"].includes(value.failedPhase)) {
+      pushIssue(
+        issues,
+        "failedPhase",
+        "must be one of: preRollback, healthcheck",
+      );
+    }
+
+    if (value.phaseEvidence === undefined) {
+      pushIssue(issues, "phaseEvidence", "is required for failed rollback receipts");
+    }
+
+    if (value.failedPhase === "healthcheck" && value.health === undefined) {
+      pushIssue(
+        issues,
+        "health",
+        "is required when rollback failedPhase is healthcheck",
+      );
+    }
+  }
+
+  if (
+    isNonEmptyString(value.failedPhase) &&
+    !SUPPORTED_RELEASE_RECEIPT_FAILURE_PHASES.includes(value.failedPhase)
+  ) {
+    pushIssue(
+      issues,
+      "failedPhase",
+      `must be one of: ${SUPPORTED_RELEASE_RECEIPT_FAILURE_PHASES.join(", ")}`,
+    );
+  }
+
+  return issues.length > 0 ? { issues } : { issues: [], receipt: value };
+}
+
+export function parseWave1ReleaseReceipt(raw) {
+  let parsed;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return {
+      issues: [
+        {
+          path: "$",
+          message:
+            error instanceof Error ? error.message : "could not parse JSON",
+        },
+      ],
+    };
+  }
+
+  return validateWave1ReleaseReceipt(parsed);
 }
 
 function normalizePath(filePath) {
@@ -357,6 +861,12 @@ async function writeReceipt(rootDir, appName, payload) {
     contractVersion: WAVE1_RELEASE_RECEIPT_VERSION,
     receiptId,
   };
+  const validation = validateWave1ReleaseReceipt(fullPayload);
+  if (validation.issues.length > 0) {
+    throw new Error(
+      `Invalid release receipt payload: ${JSON.stringify(validation.issues)}`,
+    );
+  }
   const receiptPath = path.join(receiptsDirectory(rootDir, appName), `${receiptId}.json`);
   await writeImmutableJson(receiptPath, fullPayload);
   return {
