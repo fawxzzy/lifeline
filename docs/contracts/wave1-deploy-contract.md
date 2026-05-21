@@ -30,6 +30,7 @@ The deploy manifest is a JSON object with:
 - `rollbackTarget.strategy`
 
 Canonical validation accepts `artifactRef`, `imageRef`, or a branch-shaped `repo` + `branch` input and normalizes all of them to `artifactRef` for downstream use.
+`appName` is both the logical application identifier and the release-state filesystem segment for `.lifeline/releases/<app>/...`, so contract intake rejects absolute values, separator-bearing values, and `.` or `..` before planning or persistence continues.
 
 ## Release metadata shape
 
@@ -85,6 +86,15 @@ Wave 1 release execution is local-first and single-host:
 This keeps the durable release target explicit without widening Lifeline into preview URLs, hosted control-plane behavior, domains, or TLS management.
 
 Phase evidence is recorded in the release receipt so operators can see which commands ran and which phase blocked the transition.
+
+Rule:
+Filesystem-bound identifiers must fail at contract intake, not only at execution boundaries.
+
+Pattern:
+Validate path-segment safety at both schema/contract boundaries and execution boundaries.
+
+Failure Mode:
+Engine-only validation lets invalid manifests appear valid during planning or external tooling integration, then fail later at release-state mutation time.
 
 ## Schema files
 

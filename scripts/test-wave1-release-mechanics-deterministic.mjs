@@ -10,6 +10,7 @@ import {
 } from "../control-plane/wave1-deploy-contract.mjs";
 import {
   activateWave1Release,
+  getWave1ReleaseLayout,
   persistWave1Release,
   readWave1ReleaseState,
   rollbackWave1Release,
@@ -213,43 +214,21 @@ try {
   );
   assert.equal(await pathExists(outsidePath), false);
 
-  await assert.rejects(
-    persistWave1Release(
-      createManifest({
-        appName: "../escaped-app",
-        artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:1313131313131313131313131313131313131313131313131313131313131313",
-        rollbackReleaseId: "bootstrap-release",
-        rollbackArtifactRef:
-          "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-        migrationHooks: successHooks,
-      }),
-      {
-        rootDir: tempRoot,
-        releaseId: "release-20260425-0001-appname-unix",
-        createdAt: "2026-04-25T18:01:30.000Z",
-        receiptAt: "2026-04-25T18:01:30.000Z",
-      },
+  assert.throws(
+    () => getWave1ReleaseLayout(
+      tempRoot,
+      "../escaped-app",
+      "release-20260425-0001-appname-unix",
     ),
     /Invalid appName "\.\.\/escaped-app": path separators are not allowed\./,
   );
   assert.equal(await pathExists(escapedAppPath), false);
 
-  await assert.rejects(
-    persistWave1Release(
-      createManifest({
-        appName: "..\\escaped-app",
-        artifactRef: "ghcr.io/fawxzzy/lifeline-pilot@sha256:1414141414141414141414141414141414141414141414141414141414141414",
-        rollbackReleaseId: "bootstrap-release",
-        rollbackArtifactRef:
-          "ghcr.io/fawxzzy/lifeline-pilot@sha256:0000000000000000000000000000000000000000000000000000000000000000",
-        migrationHooks: successHooks,
-      }),
-      {
-        rootDir: tempRoot,
-        releaseId: "release-20260425-0001-appname-win",
-        createdAt: "2026-04-25T18:01:45.000Z",
-        receiptAt: "2026-04-25T18:01:45.000Z",
-      },
+  assert.throws(
+    () => getWave1ReleaseLayout(
+      tempRoot,
+      "..\\escaped-app",
+      "release-20260425-0001-appname-win",
     ),
     /Invalid appName "\.\.\\escaped-app": path separators are not allowed\./,
   );

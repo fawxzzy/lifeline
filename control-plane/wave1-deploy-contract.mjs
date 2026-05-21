@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 export const WAVE1_DEPLOY_CONTRACT_VERSION = "atlas.lifeline.deploy-contract.v1";
 export const WAVE1_RELEASE_METADATA_VERSION =
@@ -40,6 +41,37 @@ function pushIssue(issues, path, message) {
 
 function normalizeStringList(value) {
   return [...value];
+}
+
+function validateAppName(appName, issues) {
+  if (!isNonEmptyString(appName)) {
+    pushIssue(issues, "appName", "must be a non-empty string");
+    return undefined;
+  }
+
+  if (path.isAbsolute(appName)) {
+    pushIssue(issues, "appName", "must not be an absolute path");
+  }
+
+  if (appName.includes("/") || appName.includes("\\")) {
+    pushIssue(issues, "appName", "must not contain path separators");
+  }
+
+  if (appName === "." || appName === "..") {
+    pushIssue(issues, "appName", "must not equal '.' or '..'");
+  }
+
+  if (
+    path.isAbsolute(appName) ||
+    appName.includes("/") ||
+    appName.includes("\\") ||
+    appName === "." ||
+    appName === ".."
+  ) {
+    return undefined;
+  }
+
+  return appName;
 }
 
 function stableJsonValue(value) {
@@ -411,9 +443,7 @@ export function validateWave1DeployManifest(value) {
     );
   }
 
-  if (!isNonEmptyString(value.appName)) {
-    pushIssue(issues, "appName", "must be a non-empty string");
-  }
+  const appName = validateAppName(value.appName, issues);
 
   const artifactInput = validateArtifactRef(value, issues);
   const route = validateRoute(value.route, issues);
@@ -443,7 +473,7 @@ export function validateWave1DeployManifest(value) {
     issues,
     manifest: {
       contractVersion: WAVE1_DEPLOY_CONTRACT_VERSION,
-      appName: value.appName,
+      appName,
       artifactRef: artifactInput.artifactRef,
       route,
       envRefs: normalizeStringList(envRefs),
@@ -478,9 +508,7 @@ export function validateWave1ReleaseMetadata(value) {
     pushIssue(issues, "releaseId", "must be a non-empty string");
   }
 
-  if (!isNonEmptyString(value.appName)) {
-    pushIssue(issues, "appName", "must be a non-empty string");
-  }
+  const appName = validateAppName(value.appName, issues);
 
   if (!isNonEmptyString(value.artifactRef)) {
     pushIssue(issues, "artifactRef", "must be a non-empty string");
@@ -553,7 +581,7 @@ export function validateWave1ReleaseMetadata(value) {
     metadata: {
       contractVersion: WAVE1_RELEASE_METADATA_VERSION,
       releaseId: value.releaseId,
-      appName: value.appName,
+      appName,
       artifactRef: value.artifactRef,
       route,
       envRefs: normalizeStringList(value.envRefs),
