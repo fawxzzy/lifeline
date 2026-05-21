@@ -10,9 +10,11 @@ import {
 } from "../control-plane/wave1-deploy-contract.mjs";
 import {
   activateWave1Release,
+  parseWave1ReleaseReceipt,
   persistWave1Release,
   readWave1ReleaseState,
   rollbackWave1Release,
+  validateWave1ReleaseReceipt,
 } from "../control-plane/wave1-release-engine.mjs";
 
 function createManifest({
@@ -183,6 +185,7 @@ try {
   assert.equal(releaseA.validation.status, "passed");
   assert.equal(releaseA.receipt.action, "planned");
   assert.equal(releaseA.receipt.releaseId, "release-20260425-0001");
+  assert.equal(validateWave1ReleaseReceipt(releaseA.receipt).issues.length, 0);
   assert.equal(
     releaseA.receipt.releaseMetadataPath,
     ".lifeline/releases/lifeline-pilot/release-20260425-0001/metadata.json",
@@ -288,6 +291,7 @@ try {
   assert.equal(activationA.ok, true);
   assert.equal(activationA.current.releaseId, releaseA.releaseId);
   assert.equal(activationA.previous, undefined);
+  assert.equal(validateWave1ReleaseReceipt(activationA.receipt).issues.length, 0);
   assert.equal(activationA.receipt.phaseEvidence.preActivate.status, "succeeded");
   assert.equal(activationA.receipt.phaseEvidence.postActivate.status, "succeeded");
   assert.deepEqual(await readHookLogLines(hookLogPath), [
@@ -322,6 +326,7 @@ try {
   assert.equal(activationB.ok, true);
   assert.equal(activationB.current.releaseId, releaseB.releaseId);
   assert.equal(activationB.previous.releaseId, releaseA.releaseId);
+  assert.equal(validateWave1ReleaseReceipt(activationB.receipt).issues.length, 0);
   assert.equal(activationB.receipt.phaseEvidence.preActivate.status, "succeeded");
   assert.equal(activationB.receipt.phaseEvidence.postActivate.status, "succeeded");
   assert.equal(
@@ -375,6 +380,7 @@ try {
   assert.equal(failedActivation.ok, false);
   assert.equal(failedActivation.current.releaseId, releaseB.releaseId);
   assert.equal(failedActivation.previous.releaseId, releaseA.releaseId);
+  assert.equal(validateWave1ReleaseReceipt(failedActivation.receipt).issues.length, 0);
   assert.equal(failedActivation.receipt.status, "failed");
   assert.equal(failedActivation.receipt.failedPhase, "preActivate");
   assert.equal(failedActivation.receipt.phaseEvidence.preActivate.status, "failed");
@@ -401,6 +407,7 @@ try {
   assert.equal(rollbackResult.ok, true);
   assert.equal(rollbackResult.current.releaseId, releaseA.releaseId);
   assert.equal(rollbackResult.previous.releaseId, releaseB.releaseId);
+  assert.equal(validateWave1ReleaseReceipt(rollbackResult.receipt).issues.length, 0);
   assert.equal(rollbackResult.receipt.action, "rollback");
   assert.equal(rollbackResult.receipt.status, "succeeded");
   assert.equal(rollbackResult.receipt.previousReleaseId, releaseB.releaseId);
@@ -422,6 +429,10 @@ try {
     tempRoot,
     activationB.receipt.receiptPath,
   );
+  assert.equal(
+    parseWave1ReleaseReceipt(JSON.stringify(activationReceipt, null, 2)).issues.length,
+    0,
+  );
   assert.equal(activationReceipt.releaseId, releaseB.releaseId);
   assert.equal(activationReceipt.action, "activate");
   assert.equal(
@@ -432,6 +443,10 @@ try {
   const rollbackReceipt = await readJson(
     tempRoot,
     rollbackResult.receipt.receiptPath,
+  );
+  assert.equal(
+    parseWave1ReleaseReceipt(JSON.stringify(rollbackReceipt, null, 2)).issues.length,
+    0,
   );
   assert.equal(rollbackReceipt.releaseId, releaseA.releaseId);
   assert.equal(rollbackReceipt.previousReleaseId, releaseB.releaseId);
@@ -467,6 +482,7 @@ try {
   assert.equal(legacyActivation.ok, true);
   assert.equal(legacyActivation.current.releaseId, legacyReleaseId);
   assert.equal(legacyActivation.previous.releaseId, releaseA.releaseId);
+  assert.equal(validateWave1ReleaseReceipt(legacyActivation.receipt).issues.length, 0);
   assert.deepEqual(legacyActivation.receipt.releaseTarget, {
     kind: "single-host-immutable",
     releaseId: legacyReleaseId,
@@ -507,6 +523,7 @@ try {
   assert.equal(legacyRollback.ok, true);
   assert.equal(legacyRollback.current.releaseId, legacyReleaseId);
   assert.equal(legacyRollback.previous.releaseId, releaseD.releaseId);
+  assert.equal(validateWave1ReleaseReceipt(legacyRollback.receipt).issues.length, 0);
   assert.deepEqual(legacyRollback.receipt.releaseTarget, {
     kind: "single-host-immutable",
     releaseId: legacyMetadata.releaseId,
@@ -576,6 +593,7 @@ try {
   assert.equal(blockedRollback.ok, false);
   assert.equal(blockedRollback.current.releaseId, rollbackTargetRelease.releaseId);
   assert.equal(blockedRollback.previous.releaseId, rollbackBlockerRelease.releaseId);
+  assert.equal(validateWave1ReleaseReceipt(blockedRollback.receipt).issues.length, 0);
   assert.equal(blockedRollback.receipt.failedPhase, "preRollback");
   assert.equal(blockedRollback.receipt.phaseEvidence.preRollback.status, "failed");
   assert.equal(

@@ -1,0 +1,483 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:atlas:lifeline:wave1:release-receipt:v1",
+  "title": "Wave 1 Lifeline Release Receipt",
+  "type": "object",
+  "required": [
+    "contractVersion",
+    "receiptId",
+    "action",
+    "status",
+    "appName",
+    "releaseId",
+    "createdAt",
+    "releaseDirectory",
+    "releaseMetadataPath",
+    "currentPointerPath",
+    "previousPointerPath",
+    "releaseTarget",
+    "rollbackTarget"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": "atlas.lifeline.release-receipt.v1"
+    },
+    "receiptId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "enum": [
+        "planned",
+        "activate",
+        "rollback"
+      ]
+    },
+    "status": {
+      "enum": [
+        "planned",
+        "succeeded",
+        "failed"
+      ]
+    },
+    "appName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "releaseId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "previousReleaseId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "createdAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "releaseDirectory": {
+      "type": "string",
+      "minLength": 1
+    },
+    "releaseMetadataPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "currentPointerPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "previousPointerPath": {
+      "type": "string",
+      "minLength": 1
+    },
+    "releaseTarget": {
+      "type": "object",
+      "required": [
+        "kind",
+        "releaseId",
+        "artifactRef"
+      ],
+      "properties": {
+        "kind": {
+          "const": "single-host-immutable"
+        },
+        "releaseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactRef": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "rollbackTarget": {
+      "type": "object",
+      "required": [
+        "releaseId",
+        "artifactRef",
+        "strategy"
+      ],
+      "properties": {
+        "releaseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategy": {
+          "enum": [
+            "redeploy",
+            "restore"
+          ]
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "sourceAdapter": {
+      "type": "object",
+      "required": [
+        "kind",
+        "canonicalArtifactRef"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "artifactRef",
+            "imageRef",
+            "branch"
+          ]
+        },
+        "canonicalArtifactRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifactRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "imageRef": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "health": {
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "integer"
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "phaseEvidence": {
+      "type": "object",
+      "properties": {
+        "preActivate": {
+          "$ref": "#/$defs/phaseResult"
+        },
+        "postActivate": {
+          "$ref": "#/$defs/phaseResult"
+        },
+        "preRollback": {
+          "$ref": "#/$defs/phaseResult"
+        }
+      },
+      "additionalProperties": false
+    },
+    "failedPhase": {
+      "enum": [
+        "preActivate",
+        "healthcheck",
+        "postActivate",
+        "preRollback"
+      ]
+    },
+    "preservedCurrentReleaseId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "preservedPreviousReleaseId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "revertedPointers": {
+      "type": "boolean"
+    },
+    "lineage": {
+      "type": "object",
+      "required": [
+        "promotedToReleaseId"
+      ],
+      "properties": {
+        "promotedFromReleaseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promotedToReleaseId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "phaseCommand": {
+      "type": "object",
+      "required": [
+        "command",
+        "status",
+        "exitCode"
+      ],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed"
+          ]
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "signal": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "phaseResult": {
+      "type": "object",
+      "required": [
+        "phase",
+        "status",
+        "commands"
+      ],
+      "properties": {
+        "phase": {
+          "enum": [
+            "preActivate",
+            "postActivate",
+            "preRollback"
+          ]
+        },
+        "status": {
+          "enum": [
+            "succeeded",
+            "failed"
+          ]
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/phaseCommand"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "planned"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "planned"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "activate"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "health",
+          "phaseEvidence",
+          "lineage"
+        ],
+        "properties": {
+          "phaseEvidence": {
+            "required": [
+              "preActivate",
+              "postActivate"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "activate"
+          },
+          "status": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "failedPhase",
+          "phaseEvidence"
+        ],
+        "properties": {
+          "failedPhase": {
+            "enum": [
+              "preActivate",
+              "healthcheck",
+              "postActivate"
+            ]
+          },
+          "phaseEvidence": {
+            "required": [
+              "preActivate"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "activate"
+          },
+          "failedPhase": {
+            "const": "postActivate"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "phaseEvidence": {
+            "required": [
+              "postActivate"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "rollback"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "previousReleaseId"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "rollback"
+          },
+          "status": {
+            "const": "succeeded"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "health",
+          "phaseEvidence",
+          "lineage"
+        ],
+        "properties": {
+          "lineage": {
+            "required": [
+              "promotedFromReleaseId"
+            ]
+          },
+          "phaseEvidence": {
+            "required": [
+              "preRollback"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "rollback"
+          },
+          "status": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "failedPhase",
+          "phaseEvidence"
+        ],
+        "properties": {
+          "failedPhase": {
+            "enum": [
+              "preRollback",
+              "healthcheck"
+            ]
+          },
+          "phaseEvidence": {
+            "required": [
+              "preRollback"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "failedPhase": {
+            "const": "healthcheck"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "health"
+        ]
+      }
+    }
+  ],
+  "additionalProperties": false
+}
