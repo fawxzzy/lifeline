@@ -4,7 +4,7 @@
   "title": "Lifeline package contract smoke",
   "summary": "Repo-owned Lifeline QA intent for deterministic contract and verify evidence.",
   "repo_id": "lifeline",
-  "repo_path": "repos/fawxzzy-lifeline",
+  "repo_path": "repos/lifeline",
   "adapter_id": "lifeline.package",
   "criticality": "high",
   "tags": [

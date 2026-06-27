@@ -2,7 +2,7 @@
   "contract_version": "atlas.qa.adapter.v1",
   "adapter_id": "lifeline.package",
   "repo_id": "lifeline",
-  "repo_path": "repos/fawxzzy-lifeline",
+  "repo_path": "repos/lifeline",
   "framework": "service-or-package",
   "lens_manifest_ref": "ops/atlas/qa/lenses/atlas-default-web.v1.json",
   "commands": {
