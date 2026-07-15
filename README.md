@@ -29,11 +29,15 @@ Lifeline stays intentionally narrower than the rest of the stack: it consumes ch
 
 ## Next milestone
 
-The next slice after repo hygiene is a narrow architecture or contract slice inside Lifeline itself, keeping the sequence explicit:
+Machine-readable roadmap truth lives in `docs/roadmap/LIFELINE_ROADMAP.json`. The deterministic owner export at `exports/lifeline.project-board.owner-export.v1.json` includes only non-complete work. `.playbook/plan.json` is verification-plan output and is not the Lifeline product roadmap.
+
+The next slice after repo hygiene remains a narrow architecture or contract slice inside Lifeline itself, but no implementation lane is ready until current evidence names a measured cost, control, reliability, or latency need. The sequence stays explicit:
 
 1. repo transport and setup
 2. repo hygiene and governance
 3. focused architecture slices
+
+Current intake candidates are `LIF-201` (select one bounded evidence-backed contract slice) and `LIF-202` (evaluate another startup backend only after a concrete unsupported target platform is measured). Neither candidate authorizes hosted-platform growth.
 
 ## Why Lifeline exists
 
