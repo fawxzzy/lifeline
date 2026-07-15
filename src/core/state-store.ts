@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { getLifelineStateDirectory } from "./lifeline-root.js";
+
 export type RuntimeStatus = "running" | "stopped" | "unhealthy" | "crash-loop" | "blocked";
 export type RestartPolicy = "on-failure" | "never";
 
@@ -32,11 +34,8 @@ export interface RuntimeStateFile {
   apps: Record<string, RuntimeAppState>;
 }
 
-const LIFELINE_DIR = path.resolve(process.cwd(), ".lifeline");
-const STATE_PATH = path.join(LIFELINE_DIR, "state.json");
-
-async function ensureStateDirectory(): Promise<void> {
-  await mkdir(LIFELINE_DIR, { recursive: true });
+async function ensureStateDirectory(stateDirectory: string): Promise<void> {
+  await mkdir(stateDirectory, { recursive: true });
 }
 
 function isRuntimeStatus(value: unknown): value is RuntimeStatus {
@@ -112,11 +111,11 @@ function sanitizeApps(value: unknown): Record<string, RuntimeAppState> {
 }
 
 export async function getStatePath(): Promise<string> {
-  return STATE_PATH;
+  return path.join(getLifelineStateDirectory(), "state.json");
 }
 
 export async function readState(): Promise<RuntimeStateFile> {
-  const raw = await readFile(STATE_PATH, "utf8").catch(() => "");
+  const raw = await readFile(await getStatePath(), "utf8").catch(() => "");
   if (!raw) {
     return { apps: {} };
   }
@@ -132,11 +131,13 @@ export async function readState(): Promise<RuntimeStateFile> {
 }
 
 export async function writeState(state: RuntimeStateFile): Promise<void> {
-  await ensureStateDirectory();
+  const stateDirectory = getLifelineStateDirectory();
+  const statePath = path.join(stateDirectory, "state.json");
+  await ensureStateDirectory(stateDirectory);
 
   const serializedState = `${JSON.stringify(state, null, 2)}\n`;
   const tempPath = path.join(
-    LIFELINE_DIR,
+    stateDirectory,
     `state.json.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
 
@@ -148,7 +149,7 @@ export async function writeState(state: RuntimeStateFile): Promise<void> {
   };
 
   try {
-    await fsPromises.rename(tempPath, STATE_PATH);
+    await fsPromises.rename(tempPath, statePath);
   } catch (error) {
     await fsPromises.unlink(tempPath).catch(() => undefined);
     throw error;

@@ -53,6 +53,8 @@ The CLI is the operator-facing entrypoint. Current commands:
 
 `up` resolves config and runs install/build, then launches a detached Lifeline supervisor process (not the app process directly).
 
+Before dispatch, the CLI resolves the Lifeline runtime home with `--root` taking precedence over `LIFELINE_ROOT`, which takes precedence over the invoking working directory. The resolved absolute home is exported as `LIFELINE_ROOT` for child and detached supervisor inheritance. This selection only relocates mutable `.lifeline` state; it does not call `chdir`, replace application working directories, or redirect Atlas discovery and repository path semantics. `doctor` reports the home and state directory without creating them.
+
 ## 5. Local runtime layer + startup contract surface (Wave 1 + merged Wave 2)
 
 Runtime behavior:
@@ -61,12 +63,12 @@ Runtime behavior:
 - supervisor owns and monitors the child app process
 - restart policy support: `runtime.restartPolicy` (`on-failure` or `never`)
 - bounded restart backoff with crash-loop cutoff
-- persisted runtime metadata in `.lifeline/state.json` (supervisor pid, child pid, restart counters, last exit)
+- persisted runtime metadata in `<resolved-home>/.lifeline/state.json` (supervisor pid, child pid, restart counters, last exit)
 - `restore` reads persisted state and re-launches restorable supervisors idempotently
 - startup contract is configured via `startup`, with canonical restore wiring to `lifeline restore` and deterministic install/uninstall/inspect behavior through the startup backend seam
 - cross-platform stop behavior: `taskkill /T /F` on Windows, process-group termination on POSIX
 
-Logs remain file-based at `.lifeline/logs/<app>.log` and include both app output and supervisor lifecycle events.
+Logs remain file-based at `<resolved-home>/.lifeline/logs/<app>.log` and include both app output and supervisor lifecycle events.
 
 ## 6. Wave 1 release target surface
 
@@ -74,7 +76,7 @@ Wave 1 release planning and activation stay local-first:
 
 - the deploy contract normalizes `artifactRef`, `imageRef`, and branch-shaped `repo` + `branch` inputs into one canonical release target
 - release ids are deterministic from the normalized release target unless an operator pins a specific id
-- immutable release metadata lands at `.lifeline/releases/<app>/<releaseId>/metadata.json`
+- immutable release metadata lands at `<resolved-home>/.lifeline/releases/<app>/<releaseId>/metadata.json`
 - mutable activation state is limited to `current.json` and `previous.json`
 - activation is health-gated, and failed candidates must not disturb the last known-good release pointers
 - plan, activation, failed activation, and rollback each emit receipts keyed to concrete release ids

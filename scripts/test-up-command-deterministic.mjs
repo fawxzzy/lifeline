@@ -10,6 +10,7 @@ await ensureBuilt();
 const fixtureDir = "fixtures/runtime-smoke-app";
 const runId = `${Date.now()}-${process.pid}`;
 const baseManifestName = "runtime-smoke-app.lifeline.yml";
+let lifelineEnvironment = process.env;
 
 function assert(condition, message) {
   if (!condition) {
@@ -21,7 +22,7 @@ function normalize(text) {
   return text.replace(/\r\n/g, "\n");
 }
 
-function runCli(args, env = process.env, timeoutMs = 30000) {
+function runCli(args, env = lifelineEnvironment, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["dist/cli.js", ...args], {
       env,
@@ -138,6 +139,10 @@ const startedApps = new Set();
 
 try {
   tempRoot = await mkdtemp(path.join(os.tmpdir(), "lifeline-up-command-deterministic-"));
+  lifelineEnvironment = {
+    ...process.env,
+    LIFELINE_ROOT: tempRoot,
+  };
 
   const missingEnvAppName = `runtime-up-missing-required-env-${runId}`;
   const missingEnvPort = await pickFreePort();
@@ -247,7 +252,7 @@ try {
   console.log("Up command deterministic boundary verification passed.");
 } finally {
   for (const appName of startedApps) {
-    await runCli(["down", appName], process.env, 15000).catch(() => {});
+    await runCli(["down", appName], lifelineEnvironment, 15000).catch(() => {});
   }
 
   if (tempRoot) {

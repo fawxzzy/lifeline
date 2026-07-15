@@ -1,12 +1,12 @@
 import { mkdir, open, readFile } from "node:fs/promises";
 import path from "node:path";
 
-const LIFELINE_DIR = path.resolve(process.cwd(), ".lifeline");
-const LOGS_DIR = path.join(LIFELINE_DIR, "logs");
+import { getLifelineStateDirectory } from "./lifeline-root.js";
 
 export async function ensureLogDirectory(): Promise<string> {
-  await mkdir(LOGS_DIR, { recursive: true });
-  return LOGS_DIR;
+  const logsDirectory = path.join(getLifelineStateDirectory(), "logs");
+  await mkdir(logsDirectory, { recursive: true });
+  return logsDirectory;
 }
 
 export async function getLogPath(appName: string): Promise<string> {

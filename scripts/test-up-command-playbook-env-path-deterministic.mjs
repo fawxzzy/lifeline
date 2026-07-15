@@ -12,6 +12,7 @@ const runId = `${Date.now()}-${process.pid}`;
 const playbookManifestName = "runtime-smoke-app.playbook.lifeline.yml";
 const playbookPath = "fixtures/playbook-export";
 const resolvedPlaybookPath = path.resolve(playbookPath);
+let lifelineEnvironment = process.env;
 
 function assert(condition, message) {
   if (!condition) {
@@ -23,7 +24,7 @@ function normalize(text) {
   return text.replace(/\r\n/g, "\n");
 }
 
-function runCli(args, env = process.env, timeoutMs = 30000) {
+function runCli(args, env = lifelineEnvironment, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["dist/cli.js", ...args], {
       env,
@@ -159,6 +160,10 @@ const startedApps = new Set();
 
 try {
   tempRoot = await mkdtemp(path.join(os.tmpdir(), "lifeline-up-playbook-env-path-deterministic-"));
+  lifelineEnvironment = {
+    ...process.env,
+    LIFELINE_ROOT: tempRoot,
+  };
 
   const explicitAppName = `runtime-up-playbook-explicit-deterministic-${runId}`;
   const explicitPort = await pickFreePort();
@@ -177,7 +182,7 @@ try {
   const envManifest = await preparePlaybookFixture(tempRoot, envAppName, envPort);
 
   const envResult = await runCli(["up", envManifest], {
-    ...process.env,
+    ...lifelineEnvironment,
     LIFELINE_PLAYBOOK_PATH: playbookPath,
   });
   assertSuccessSurface("env-var LIFELINE_PLAYBOOK_PATH", envResult, envAppName, envPort);
@@ -213,7 +218,7 @@ try {
   console.log("Up command playbook env-path deterministic verification passed.");
 } finally {
   for (const appName of startedApps) {
-    await runCli(["down", appName], process.env, 15000).catch(() => {});
+    await runCli(["down", appName], lifelineEnvironment, 15000).catch(() => {});
   }
 
   if (tempRoot) {

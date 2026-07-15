@@ -62,6 +62,7 @@ declare module "node:path" {
     dirname: (path: string) => string;
     basename: (path: string) => string;
     join: (...paths: string[]) => string;
+    normalize: (path: string) => string;
     isAbsolute: (path: string) => boolean;
     relative: (from: string, to: string) => string;
   };

@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 
+import { getLifelineRoot } from "../core/lifeline-root.js";
+
 type ReleaseAction = "plan" | "persist" | "activate" | "rollback";
 type ReleaseMutationAction = "activate" | "rollback";
 
@@ -16,20 +18,22 @@ type Wave1ReleaseMutationResult = {
 type Wave1ReleaseModules = {
   planWave1Release: (
     manifest: unknown,
-    options?: { rootDir?: string },
+    options?: { rootDir?: string; stateRootDir?: string },
   ) => Wave1ReleasePlanResult & Record<string, unknown>;
   persistWave1Release: (
     manifest: unknown,
-    options?: { rootDir?: string },
+    options?: { rootDir?: string; stateRootDir?: string },
   ) => Promise<Wave1ReleasePlanResult & Record<string, unknown>>;
   activateWave1Release: (
     rootDir: string,
     appName: string,
     releaseId: string,
+    options?: { workingDirectory?: string },
   ) => Promise<Wave1ReleaseMutationResult & Record<string, unknown>>;
   rollbackWave1Release: (
     rootDir: string,
     appName: string,
+    options?: { workingDirectory?: string },
   ) => Promise<Wave1ReleaseMutationResult & Record<string, unknown>>;
 };
 
@@ -189,6 +193,7 @@ export async function runReleaseCommand(args: string[]): Promise<number> {
 
     const modules = await loadWave1ReleaseModules();
     const rootDir = process.cwd();
+    const stateRootDir = getLifelineRoot();
 
     if (action === "plan" || action === "persist") {
       const manifestPath = rest[0];
@@ -201,8 +206,11 @@ export async function runReleaseCommand(args: string[]): Promise<number> {
       const manifest = await loadDeployManifest(manifestPath);
       const result =
         action === "plan"
-          ? modules.planWave1Release(manifest, { rootDir })
-          : await modules.persistWave1Release(manifest, { rootDir });
+          ? modules.planWave1Release(manifest, { rootDir, stateRootDir })
+          : await modules.persistWave1Release(manifest, {
+              rootDir,
+              stateRootDir,
+            });
 
       printJson(result);
       return exitCodeForPlanResult(result);
@@ -228,9 +236,10 @@ export async function runReleaseCommand(args: string[]): Promise<number> {
       }
 
       const result = await modules.activateWave1Release(
-        rootDir,
+        stateRootDir,
         appName,
         releaseId,
+        { workingDirectory: rootDir },
       );
       printJson(result);
       return exitCodeForMutationResult(result);
@@ -253,7 +262,9 @@ export async function runReleaseCommand(args: string[]): Promise<number> {
       return confirmationResult;
     }
 
-    const result = await modules.rollbackWave1Release(rootDir, appName);
+    const result = await modules.rollbackWave1Release(stateRootDir, appName, {
+      workingDirectory: rootDir,
+    });
     printJson(result);
     return exitCodeForMutationResult(result);
   } catch (error) {

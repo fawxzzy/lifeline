@@ -1,43 +1,29 @@
 import assert from "node:assert/strict";
-import { access, appendFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { pathToFileURL } from "node:url";
 
-import typescript from "typescript";
-import { ensureTempEsmPackage } from "./lib/ensure-temp-esm-package.mjs";
+import { ensureBuilt } from "./lib/ensure-built.mjs";
 
-async function transpileLogStoreModule(transpileRoot) {
-  const sourcePath = path.join("src", "core", "log-store.ts");
-  const source = await readFile(sourcePath, "utf8");
-  const transpiled = typescript.transpileModule(source, {
-    compilerOptions: {
-      module: typescript.ModuleKind.ES2022,
-      target: typescript.ScriptTarget.ES2022,
-    },
-    fileName: sourcePath,
-  });
-
-  const destinationPath = path.join(transpileRoot, "core", "log-store.js");
-  await mkdir(path.dirname(destinationPath), { recursive: true });
-  await writeFile(destinationPath, transpiled.outputText, "utf8");
-  return destinationPath;
-}
+await ensureBuilt();
 
 const originalCwd = process.cwd();
+const originalRoot = process.env.LIFELINE_ROOT;
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "lifeline-log-store-"));
-const transpileRoot = await mkdtemp(
-  path.join(os.tmpdir(), "lifeline-log-store-transpile-"),
-);
 
 try {
-  await ensureTempEsmPackage(transpileRoot);
-  const modulePath = await transpileLogStoreModule(transpileRoot);
-
+  Reflect.deleteProperty(process.env, "LIFELINE_ROOT");
   process.chdir(tempRoot);
   const { ensureLogDirectory, getLogPath, appendLogHeader, tailLogFile } =
-    await import(pathToFileURL(modulePath).href);
+    await import("../dist/core/log-store.js");
 
   const logsDir = path.join(tempRoot, ".lifeline", "logs");
 
@@ -72,6 +58,10 @@ try {
   console.log("log-store deterministic verification passed.");
 } finally {
   process.chdir(originalCwd);
+  if (originalRoot === undefined) {
+    Reflect.deleteProperty(process.env, "LIFELINE_ROOT");
+  } else {
+    process.env.LIFELINE_ROOT = originalRoot;
+  }
   await rm(tempRoot, { recursive: true, force: true });
-  await rm(transpileRoot, { recursive: true, force: true });
 }

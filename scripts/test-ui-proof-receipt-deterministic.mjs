@@ -34,6 +34,7 @@ function runCli(args, atlasRoot) {
     env: {
       ...process.env,
       ATLAS_ROOT: atlasRoot,
+      LIFELINE_ROOT: atlasRoot,
     },
   });
 

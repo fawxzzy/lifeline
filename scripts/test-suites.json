@@ -25,6 +25,7 @@
   ],
   "core": [
     "test-ensure-built-deterministic.mjs",
+    "test-lifeline-root-deterministic.mjs",
     "test-healthcheck-deterministic.mjs",
     "test-load-env-file-deterministic.mjs",
     "test-load-playbook-archetype-defaults-deterministic.mjs",

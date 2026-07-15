@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { ValidationError } from "./errors.js";
+import { getLifelineReceiptsDirectory } from "./lifeline-root.js";
 import {
   normalizeCapturedText,
   normalizeReceiptPath,
@@ -1918,8 +1919,9 @@ export async function executePrivilegedAction(options: {
     await loadJson(options.approvalReceiptPath),
   );
   const executionMode = executionModeFor(request);
-  const receiptDir =
-    options.receiptDir ?? path.resolve(process.cwd(), ".lifeline", "receipts");
+  const receiptDir = resolvePrivilegedExecutionReceiptDirectory(
+    options.receiptDir,
+  );
   const atlasRoot = await findAtlasRoot(process.cwd());
   const requestSourceRef = atlasRoot
     ? relativeAtlasRef(atlasRoot, options.requestPath)
@@ -2492,4 +2494,10 @@ export async function executePrivilegedAction(options: {
     requestSourceRefs,
   });
   return { receipt, receiptPath, exitCode: result === "succeeded" ? 0 : 1 };
+}
+
+export function resolvePrivilegedExecutionReceiptDirectory(
+  receiptDir?: string,
+): string {
+  return receiptDir ?? getLifelineReceiptsDirectory();
 }
