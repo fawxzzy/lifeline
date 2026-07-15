@@ -1,0 +1,141 @@
+{
+  "contract_version": "atlas.project-board.owner-export.v1",
+  "export_id": "pbe_lifeline_roadmap_8e0db39b53cc",
+  "project_id": "lifeline",
+  "board_id": "discordos:project-feedback:lifeline",
+  "owner": "lifeline",
+  "adapter_id": "lifeline-roadmap-v1",
+  "source_revision": "sha256:8e0db39b53cc7f33270ccb6897d2284829353b960cd9604a3f1a77e9a9cdbf16",
+  "generated_at": "2026-07-14T00:00:00.000Z",
+  "sources": [
+    {
+      "source_id": "lifeline-roadmap",
+      "kind": "json",
+      "repository": "lifeline",
+      "path": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json",
+      "revision": "sha256:8e0db39b53cc7f33270ccb6897d2284829353b960cd9604a3f1a77e9a9cdbf16",
+      "observed_at": "2026-07-14T00:00:00.000Z"
+    }
+  ],
+  "cards": [
+    {
+      "idempotency_key": "pbk_lifeline_lif-201_v1",
+      "record_kind": "project-work",
+      "record_status": "candidate",
+      "record": {
+        "contract_version": "atlas.card-record.v2",
+        "card_id": "LIF-201",
+        "project_id": "lifeline",
+        "board_id": "discordos:project-feedback:lifeline",
+        "title": "Select the next bounded architecture or contract slice",
+        "description": "Choose one evidence-backed Lifeline extension only when a measured cost, control, reliability, or latency need justifies it.",
+        "card_type": "architecture",
+        "lifecycle": "intake",
+        "priority": null,
+        "owner": "lifeline",
+        "dependencies": [],
+        "board_version": 1,
+        "updated_at": "2026-07-14T00:00:00.000Z",
+        "source_ref": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json#LIF-201",
+        "extensions": {
+          "roadmap_status": "candidate",
+          "roadmap_schema_version": 1
+        }
+      },
+      "source": {
+        "source_id": "lifeline-roadmap",
+        "source_ref": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json#LIF-201",
+        "source_status": "current",
+        "source_updated_at": "2026-07-14T00:00:00.000Z"
+      },
+      "content": {
+        "summary": "Choose one evidence-backed Lifeline extension only when a measured cost, control, reliability, or latency need justifies it.",
+        "objective": "Choose one evidence-backed Lifeline extension only when a measured cost, control, reliability, or latency need justifies it.",
+        "acceptance_criteria": [
+          "The selected problem is supported by current owner or runtime evidence.",
+          "The proposal names a bounded contract and deterministic verification path.",
+          "The proposal preserves Lifeline's local-first, single-host boundary unless a separate architecture decision changes it.",
+          "Hosted-platform, dashboard, auth, database-control-plane, and multi-node scope are not implied."
+        ],
+        "discoveries": [],
+        "next_actions": [],
+        "blockers": [],
+        "evidence": [
+          "repos/lifeline/docs/adr/0001-lifeline-v1-scope.md",
+          "repos/lifeline/docs/scope.md",
+          "repos/lifeline/README.md"
+        ]
+      },
+      "relationships": {
+        "parent_card_id": null,
+        "duplicate_of": null,
+        "superseded_by": null
+      }
+    },
+    {
+      "idempotency_key": "pbk_lifeline_lif-202_v1",
+      "record_kind": "project-work",
+      "record_status": "candidate",
+      "record": {
+        "contract_version": "atlas.card-record.v2",
+        "card_id": "LIF-202",
+        "project_id": "lifeline",
+        "board_id": "discordos:project-feedback:lifeline",
+        "title": "Evaluate a startup backend for a measured unsupported platform",
+        "description": "Add another startup installer only after a real target platform and operational need are identified.",
+        "card_type": "research",
+        "lifecycle": "intake",
+        "priority": null,
+        "owner": "lifeline",
+        "dependencies": [
+          "LIF-201"
+        ],
+        "board_version": 1,
+        "updated_at": "2026-07-14T00:00:00.000Z",
+        "source_ref": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json#LIF-202",
+        "extensions": {
+          "roadmap_status": "candidate",
+          "roadmap_schema_version": 1
+        }
+      },
+      "source": {
+        "source_id": "lifeline-roadmap",
+        "source_ref": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json#LIF-202",
+        "source_status": "current",
+        "source_updated_at": "2026-07-14T00:00:00.000Z"
+      },
+      "content": {
+        "summary": "Add another startup installer only after a real target platform and operational need are identified.",
+        "objective": "Add another startup installer only after a real target platform and operational need are identified.",
+        "acceptance_criteria": [
+          "A concrete unsupported target platform is named from current operator evidence.",
+          "The backend uses the canonical lifeline restore entrypoint.",
+          "Status, dry-run, install, uninstall, and deterministic tests follow the existing startup contract.",
+          "No generic all-platform expansion is authorized."
+        ],
+        "discoveries": [],
+        "next_actions": [],
+        "blockers": [],
+        "evidence": [
+          "repos/lifeline/docs/startup-contract.md",
+          "repos/lifeline/src/core/startup-backend.ts"
+        ]
+      },
+      "relationships": {
+        "parent_card_id": null,
+        "duplicate_of": null,
+        "superseded_by": null
+      }
+    }
+  ],
+  "extensions": {
+    "source_digest": "sha256:8e0db39b53cc7f33270ccb6897d2284829353b960cd9604a3f1a77e9a9cdbf16",
+    "source_work_item_count": 10,
+    "exported_card_count": 2,
+    "excluded_completed_statuses": [
+      "complete"
+    ],
+    "discord_mutation_authorized": false,
+    "empty_playbook_plan_classification": "verification-output-not-product-roadmap"
+  }
+}

@@ -1,0 +1,165 @@
+{
+  "schemaVersion": 1,
+  "projectId": "lifeline",
+  "updatedAt": "2026-07-14",
+  "sourceRefs": [
+    "README.md",
+    "docs/scope.md",
+    "docs/startup-contract.md",
+    "docs/lifeline-release-safety-closeout-2026-05-20.md"
+  ],
+  "workItems": [
+    {
+      "id": "LIF-101",
+      "title": "Manifest validation and resolution contract",
+      "status": "complete",
+      "goal": "Validate manifest-defined apps and resolve optional Playbook defaults through one deterministic CLI boundary.",
+      "type": "feature",
+      "priority": null,
+      "dependencies": [],
+      "acceptanceCriteria": [
+        "Manifest validation runs through the Lifeline CLI boundary.",
+        "Playbook defaults remain optional and file-based.",
+        "Explicit manifest values override Playbook defaults."
+      ],
+      "evidence": ["README.md", "docs/contracts/app-manifest.md", "src/core/load-playbook-exports.ts"]
+    },
+    {
+      "id": "LIF-102",
+      "title": "Single-machine runtime lifecycle",
+      "status": "complete",
+      "goal": "Operate one manifest-defined app on one machine with deterministic lifecycle and restore behavior.",
+      "type": "feature",
+      "priority": null,
+      "dependencies": ["LIF-101"],
+      "acceptanceCriteria": [
+        "Runtime commands cover up, down, status, logs, restart, and restore.",
+        "Supervisor state and logs remain local and explicit.",
+        "Port ownership and crash-loop failures fail closed."
+      ],
+      "evidence": ["README.md", "docs/scope.md", "src/core/runtime.ts"]
+    },
+    {
+      "id": "LIF-103",
+      "title": "Bounded release lifecycle",
+      "status": "complete",
+      "goal": "Plan, persist, activate, and roll back immutable single-host releases with explicit pointer safety.",
+      "type": "feature",
+      "priority": null,
+      "dependencies": ["LIF-102"],
+      "acceptanceCriteria": [
+        "Release planning is non-mutating.",
+        "Persisted releases are immutable and replayable.",
+        "Activation and rollback preserve confirmation and lineage evidence."
+      ],
+      "evidence": ["docs/contracts/wave1-deploy-contract.md", "docs/contracts/wave1-release-receipt.md", "docs/lifeline-release-safety-closeout-2026-05-20.md"]
+    },
+    {
+      "id": "LIF-104",
+      "title": "Deterministic runtime and release receipts",
+      "status": "complete",
+      "goal": "Emit auditable receipts for governed execution, proof, release, and rollback outcomes.",
+      "type": "reliability",
+      "priority": null,
+      "dependencies": ["LIF-103"],
+      "acceptanceCriteria": [
+        "Receipts identify action, status, provenance, and remediation.",
+        "Release replay can detect malformed, duplicate, or inconsistent evidence.",
+        "Owner verification covers receipt contracts."
+      ],
+      "evidence": ["docs/contracts/privileged-execution-contract.md", "docs/contracts/ui-proof-passed-receipt-contract.md", "docs/contracts/wave1-release-receipt.md"]
+    },
+    {
+      "id": "LIF-105",
+      "title": "Current multi-OS startup backend set",
+      "status": "complete",
+      "goal": "Register the canonical lifeline restore entrypoint on the currently supported operating systems.",
+      "type": "feature",
+      "priority": null,
+      "dependencies": ["LIF-102"],
+      "acceptanceCriteria": [
+        "Windows, Linux, macOS, FreeBSD, OpenBSD, NetBSD, and AIX have explicit backends.",
+        "Unsupported platforms report contract-only status.",
+        "Dry-run remains non-mutating."
+      ],
+      "evidence": ["docs/startup-contract.md", "src/core/startup-backend.ts", "scripts/test-wave2-startup-deterministic.mjs"]
+    },
+    {
+      "id": "LIF-106",
+      "title": "Capability-backed privileged execution bridge",
+      "status": "complete",
+      "goal": "Execute bounded read-only and dry-run worker requests with explicit capability and approval receipts.",
+      "type": "governance",
+      "priority": null,
+      "dependencies": ["LIF-104"],
+      "acceptanceCriteria": [
+        "Capability mismatch and expired or rejected approval fail closed.",
+        "Out-of-scope workspace writes do not execute.",
+        "Every accepted attempt emits an auditable receipt."
+      ],
+      "evidence": ["docs/privileged-execution.md", "scripts/test-privileged-execution-worker-bridge-deterministic.mjs", "scripts/test-privileged-execution-receipt-repair-deterministic.mjs"]
+    },
+    {
+      "id": "LIF-107",
+      "title": "ATLAS UI proof receipt bridge",
+      "status": "complete",
+      "goal": "Convert clean, completion-ready ATLAS UI proof into deterministic Lifeline proof receipts.",
+      "type": "automation",
+      "priority": null,
+      "dependencies": ["LIF-104"],
+      "acceptanceCriteria": [
+        "Blocked or mismatched proof cannot emit a passed receipt.",
+        "Path-like source references normalize across operating systems.",
+        "Receipt failure identifies a first remediation step."
+      ],
+      "evidence": ["docs/contracts/ui-proof-passed-receipt-contract.md", "scripts/test-ui-proof-receipt-deterministic.mjs", "README.md"]
+    },
+    {
+      "id": "LIF-GOV-001",
+      "title": "Owner roadmap and platform-cutover reconciliation",
+      "status": "complete",
+      "goal": "Replace the empty verification plan as roadmap evidence and reconcile historical cutover claims against shipped owner truth.",
+      "type": "governance",
+      "priority": null,
+      "dependencies": [],
+      "acceptanceCriteria": [
+        "A keyed machine roadmap separates completed capabilities from non-complete work.",
+        "The empty .playbook plan is classified as verification output rather than product roadmap authority.",
+        "Non-complete work exports deterministically without Discord mutation."
+      ],
+      "evidence": ["docs/roadmap/LIFELINE_ROADMAP.json", "README.md", ".playbook/plan.json"]
+    },
+    {
+      "id": "LIF-201",
+      "title": "Select the next bounded architecture or contract slice",
+      "status": "candidate",
+      "goal": "Choose one evidence-backed Lifeline extension only when a measured cost, control, reliability, or latency need justifies it.",
+      "type": "architecture",
+      "priority": null,
+      "dependencies": [],
+      "acceptanceCriteria": [
+        "The selected problem is supported by current owner or runtime evidence.",
+        "The proposal names a bounded contract and deterministic verification path.",
+        "The proposal preserves Lifeline's local-first, single-host boundary unless a separate architecture decision changes it.",
+        "Hosted-platform, dashboard, auth, database-control-plane, and multi-node scope are not implied."
+      ],
+      "evidence": ["README.md", "docs/scope.md", "docs/adr/0001-lifeline-v1-scope.md"]
+    },
+    {
+      "id": "LIF-202",
+      "title": "Evaluate a startup backend for a measured unsupported platform",
+      "status": "candidate",
+      "goal": "Add another startup installer only after a real target platform and operational need are identified.",
+      "type": "research",
+      "priority": null,
+      "dependencies": ["LIF-201"],
+      "acceptanceCriteria": [
+        "A concrete unsupported target platform is named from current operator evidence.",
+        "The backend uses the canonical lifeline restore entrypoint.",
+        "Status, dry-run, install, uninstall, and deterministic tests follow the existing startup contract.",
+        "No generic all-platform expansion is authorized."
+      ],
+      "evidence": ["docs/startup-contract.md", "src/core/startup-backend.ts"]
+    }
+  ]
+}
