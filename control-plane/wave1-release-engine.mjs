@@ -913,8 +913,9 @@ export function planWave1Release(manifest, options = {}) {
   }
 
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
+  const stateRootDir = path.resolve(options.stateRootDir ?? rootDir);
   const layout = getWave1ReleaseLayout(
-    rootDir,
+    stateRootDir,
     releasePlan.appName,
     releasePlan.releaseId,
   );
@@ -922,12 +923,13 @@ export function planWave1Release(manifest, options = {}) {
   return {
     ...releasePlan,
     rootDir: normalizePath(rootDir),
+    stateRootDir: normalizePath(stateRootDir),
     layout: {
-      releaseDirectory: normalizeRelativePath(rootDir, layout.releaseDirectory),
-      releaseMetadataPath: normalizeRelativePath(rootDir, layout.releaseMetadataPath),
-      currentPointerPath: normalizeRelativePath(rootDir, layout.currentPointerPath),
-      previousPointerPath: normalizeRelativePath(rootDir, layout.previousPointerPath),
-      receiptsDirectory: normalizeRelativePath(rootDir, layout.receiptsDirectory),
+      releaseDirectory: normalizeRelativePath(stateRootDir, layout.releaseDirectory),
+      releaseMetadataPath: normalizeRelativePath(stateRootDir, layout.releaseMetadataPath),
+      currentPointerPath: normalizeRelativePath(stateRootDir, layout.currentPointerPath),
+      previousPointerPath: normalizeRelativePath(stateRootDir, layout.previousPointerPath),
+      receiptsDirectory: normalizeRelativePath(stateRootDir, layout.receiptsDirectory),
     },
   };
 }
@@ -939,8 +941,9 @@ export async function persistWave1Release(manifest, options = {}) {
   }
 
   const rootDir = path.resolve(options.rootDir ?? process.cwd());
+  const stateRootDir = path.resolve(options.stateRootDir ?? rootDir);
   const layout = getWave1ReleaseLayout(
-    rootDir,
+    stateRootDir,
     releasePlan.appName,
     releasePlan.releaseId,
   );
@@ -953,7 +956,7 @@ export async function persistWave1Release(manifest, options = {}) {
 
   const receiptAt =
     options.receiptAt ?? releasePlan.releaseMetadata.createdAt;
-  const receiptResult = await writeReceipt(rootDir, releasePlan.appName, {
+  const receiptResult = await writeReceipt(stateRootDir, releasePlan.appName, {
     action: "planned",
     status: "planned",
     appName: releasePlan.appName,
@@ -972,7 +975,7 @@ export async function persistWave1Release(manifest, options = {}) {
     ...releasePlan,
     receipt: {
       ...receiptResult.receipt,
-      receiptPath: normalizeRelativePath(rootDir, receiptResult.receiptPath),
+      receiptPath: normalizeRelativePath(stateRootDir, receiptResult.receiptPath),
     },
   };
 }
@@ -984,13 +987,14 @@ export async function activateWave1Release(
   options = {},
 ) {
   const resolvedRoot = path.resolve(rootDir);
+  const workingDirectory = path.resolve(options.workingDirectory ?? resolvedRoot);
   const layout = getWave1ReleaseLayout(resolvedRoot, appName, releaseId);
   const { metadata } = await loadReleaseMetadata(resolvedRoot, appName, releaseId);
   const current = await readPointer(layout.currentPointerPath);
   const previous = await readPointer(layout.previousPointerPath);
   const receiptAt = options.receiptAt ?? metadata.createdAt;
   const preActivate = await runReleasePhase(
-    resolvedRoot,
+    workingDirectory,
     "preActivate",
     getMigrationHookCommands(metadata.migrationHooks, "preActivate"),
   );
@@ -1115,7 +1119,7 @@ export async function activateWave1Release(
   }
 
   const postActivate = await runReleasePhase(
-    resolvedRoot,
+    workingDirectory,
     "postActivate",
     getMigrationHookCommands(metadata.migrationHooks, "postActivate"),
   );
@@ -1216,6 +1220,7 @@ export async function activateWave1Release(
 
 export async function rollbackWave1Release(rootDir, appName, options = {}) {
   const resolvedRoot = path.resolve(rootDir);
+  const workingDirectory = path.resolve(options.workingDirectory ?? resolvedRoot);
   const current = await readPointer(currentPointerPath(resolvedRoot, appName));
   const previous = await readPointer(previousPointerPath(resolvedRoot, appName));
 
@@ -1236,7 +1241,7 @@ export async function rollbackWave1Release(rootDir, appName, options = {}) {
     previous.releaseId,
   );
   const preRollback = await runReleasePhase(
-    resolvedRoot,
+    workingDirectory,
     "preRollback",
     getMigrationHookCommands(metadata.migrationHooks, "preRollback"),
   );

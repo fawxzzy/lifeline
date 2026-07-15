@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "projectId": "lifeline",
-  "updatedAt": "2026-07-14",
+  "updatedAt": "2026-07-15",
   "sourceRefs": [
     "README.md",
     "docs/scope.md",
@@ -131,19 +131,20 @@
     },
     {
       "id": "LIF-201",
-      "title": "Select the next bounded architecture or contract slice",
-      "status": "candidate",
-      "goal": "Choose one evidence-backed Lifeline extension only when a measured cost, control, reliability, or latency need justifies it.",
+      "title": "External runtime-home placement contract",
+      "status": "complete",
+      "goal": "Place all mutable Lifeline state beneath an explicit runtime home without redirecting application or repository path semantics.",
       "type": "architecture",
       "priority": null,
       "dependencies": [],
       "acceptanceCriteria": [
-        "The selected problem is supported by current owner or runtime evidence.",
-        "The proposal names a bounded contract and deterministic verification path.",
-        "The proposal preserves Lifeline's local-first, single-host boundary unless a separate architecture decision changes it.",
-        "Hosted-platform, dashboard, auth, database-control-plane, and multi-node scope are not implied."
+        "Global --root and LIFELINE_ROOT inputs resolve by CLI, environment, then invoking-cwd precedence.",
+        "Runtime, log, startup, release, privileged-execution, and proof-receipt state remains beneath the resolved home's .lifeline directory.",
+        "Detached supervisors inherit the resolved absolute LIFELINE_ROOT value.",
+        "Doctor reports the resolved home and state directory without creating them.",
+        "Application working directories, Atlas discovery, and unrelated repository paths remain based on their existing contracts."
       ],
-      "evidence": ["README.md", "docs/scope.md", "docs/adr/0001-lifeline-v1-scope.md"]
+      "evidence": ["README.md", "src/core/lifeline-root.ts", "scripts/test-lifeline-root-deterministic.mjs"]
     },
     {
       "id": "LIF-202",
@@ -160,6 +161,38 @@
         "No generic all-platform expansion is authorized."
       ],
       "evidence": ["docs/startup-contract.md", "src/core/startup-backend.ts"]
+    },
+    {
+      "id": "LIF-203",
+      "title": "Supervised Playbook Observer restart proof",
+      "status": "planned",
+      "goal": "Prove that the Playbook Observer can be started and restored under Lifeline supervision using the canonical external runtime home.",
+      "type": "reliability",
+      "priority": null,
+      "dependencies": ["LIF-201"],
+      "acceptanceCriteria": [
+        "Playbook start:lifeline wiring supplies the canonical Lifeline runtime-home argument.",
+        "Observer runtime paths remain separate from Lifeline supervisor state.",
+        "A bounded supervised restart proves state, log, pid, and health continuity.",
+        "The source checkout remains free of mutable .lifeline state."
+      ],
+      "evidence": ["README.md", "src/core/supervisor.ts", "src/core/state-store.ts"]
+    },
+    {
+      "id": "LIF-204",
+      "title": "Windows logon restore contract and proof",
+      "status": "planned",
+      "goal": "Prove Windows logon restoration for the supervised Playbook Observer after the supervised restart contract is established.",
+      "type": "reliability",
+      "priority": null,
+      "dependencies": ["LIF-203"],
+      "acceptanceCriteria": [
+        "The Windows startup backend restores through the canonical lifeline restore entrypoint.",
+        "The restored process inherits the canonical external Lifeline runtime home.",
+        "Logon proof records startup intent, task state, supervisor state, and Observer health.",
+        "Registration and proof remain bounded to the named Windows operator lane."
+      ],
+      "evidence": ["docs/startup-contract.md", "src/core/startup-backends/windows-task-scheduler.ts", "scripts/test-startup-roundtrip-windows-deterministic.mjs"]
     }
   ]
 }

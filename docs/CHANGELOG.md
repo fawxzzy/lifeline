@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-15
+
+- Added the explicit Lifeline runtime-home placement contract with global `--root` forms, `LIFELINE_ROOT`, CLI-over-environment-over-cwd precedence, absolute child inheritance, and non-creating `doctor` path reporting.
+- Redirected runtime state, logs, startup state, release state, privileged receipts, and proof receipts beneath `<resolved-home>/.lifeline/` while preserving application working directories, Atlas discovery, and `--receipt-dir` overrides.
+- Added deterministic runtime-home proof and owner-roadmap follow-on lanes for supervised Playbook Observer restart and Windows logon restoration.
+- WHY: Lifeline must supervise long-running local services without writing mutable state into a source checkout.
+
 ## 2026-05-20
 
 - Added a release-safety closeout checkpoint covering merged Wave 1, Wave 2, and Wave 3 hardening across release replay evidence, destructive pointer confirmations, receipt health, replay proof, and rollback confidence.

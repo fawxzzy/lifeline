@@ -13,11 +13,12 @@ import { runStatusCommand } from "./commands/status.js";
 import { runUpCommand } from "./commands/up.js";
 import { runValidateCommand } from "./commands/validate.js";
 import { LifelineError } from "./core/errors.js";
+import { configureLifelineInvocation } from "./core/lifeline-root.js";
 import { runSupervisor } from "./core/supervisor.js";
 
 function printUsage(): void {
   console.log(
-    "Lifeline v1 + Wave 2 startup and execution contracts\n\nUsage:\n  lifeline doctor\n  lifeline validate <manifest-path> [--playbook-path <path>]\n  lifeline resolve <manifest-path> [--playbook-path <path>]\n  lifeline up <manifest-path> [--playbook-path <path>]\n  lifeline down <app-name>\n  lifeline status <app-name> [--proof|--proof-text] [--proof-gate]\n  lifeline logs <app-name> [line-count]\n  lifeline restart <app-name> [--playbook-path <path>]\n  lifeline restore\n  lifeline startup <enable|disable|status> [--dry-run]\n  lifeline release <plan|persist> <deploy-manifest>\n  lifeline release activate <app-name> <release-id> [--yes|--confirm]\n  lifeline release rollback <app-name> [--yes|--confirm]\n  lifeline execute <request-path> --capability-profile <path> --approval-receipt <path> [--receipt-dir <path>]\n  lifeline proof-pass <proof-summary-path> --source-repo <id> --tranche <id> [--receipt-dir <path>]",
+    "Lifeline v1 + Wave 2 startup and execution contracts\n\nGlobal runtime-home option:\n  --root <path> | --root=<path>  (overrides LIFELINE_ROOT and defaults to the invoking cwd)\n\nUsage:\n  lifeline [--root <path>] doctor\n  lifeline [--root <path>] validate <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] resolve <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] up <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] down <app-name>\n  lifeline [--root <path>] status <app-name> [--proof|--proof-text] [--proof-gate]\n  lifeline [--root <path>] logs <app-name> [line-count]\n  lifeline [--root <path>] restart <app-name> [--playbook-path <path>]\n  lifeline [--root <path>] restore\n  lifeline [--root <path>] startup <enable|disable|status> [--dry-run]\n  lifeline [--root <path>] release <plan|persist> <deploy-manifest>\n  lifeline [--root <path>] release activate <app-name> <release-id> [--yes|--confirm]\n  lifeline [--root <path>] release rollback <app-name> [--yes|--confirm]\n  lifeline [--root <path>] execute <request-path> --capability-profile <path> --approval-receipt <path> [--receipt-dir <path>]\n  lifeline [--root <path>] proof-pass <proof-summary-path> --source-repo <id> --tranche <id> [--receipt-dir <path>]",
   );
 }
 
@@ -79,7 +80,8 @@ function parsePlaybookOption(args: string[]): {
 }
 
 async function main(argv: string[]): Promise<number> {
-  const [command, ...rest] = argv;
+  const invocation = configureLifelineInvocation({ argv });
+  const [command, ...rest] = invocation.argv;
   const { target, option, playbookPath, statusProofMode, enforceProofGate } =
     parsePlaybookOption(rest);
 

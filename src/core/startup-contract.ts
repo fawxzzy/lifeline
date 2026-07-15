@@ -5,6 +5,7 @@ import {
   type StartupBackend,
   type StartupBackendStatus,
 } from "./startup-backend.js";
+import { getLifelineStateDirectory } from "./lifeline-root.js";
 
 export type StartupIntent = "enabled" | "disabled";
 
@@ -69,9 +70,6 @@ interface StartupState {
   updatedAt: string;
 }
 
-const LIFELINE_DIR = path.resolve(process.cwd(), ".lifeline");
-const STARTUP_STATE_PATH = path.join(LIFELINE_DIR, "startup.json");
-
 function defaultState(): StartupState {
   return {
     version: 1,
@@ -108,7 +106,11 @@ function sanitizeBackendStatus(value: unknown): StartupBackendStatus {
 }
 
 async function readStartupState(): Promise<StartupState> {
-  const raw = await readFile(STARTUP_STATE_PATH, "utf8").catch(() => "");
+  const startupStatePath = path.join(
+    getLifelineStateDirectory(),
+    "startup.json",
+  );
+  const raw = await readFile(startupStatePath, "utf8").catch(() => "");
   if (!raw) {
     return defaultState();
   }
@@ -135,11 +137,13 @@ async function readStartupState(): Promise<StartupState> {
 }
 
 async function writeStartupState(state: StartupState): Promise<void> {
-  await mkdir(LIFELINE_DIR, { recursive: true });
+  const stateDirectory = getLifelineStateDirectory();
+  const startupStatePath = path.join(stateDirectory, "startup.json");
+  await mkdir(stateDirectory, { recursive: true });
 
   const serializedState = `${JSON.stringify(state, null, 2)}\n`;
   const tempPath = path.join(
-    LIFELINE_DIR,
+    stateDirectory,
     `startup.json.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
 
@@ -151,7 +155,7 @@ async function writeStartupState(state: StartupState): Promise<void> {
   };
 
   try {
-    await fsPromises.rename(tempPath, STARTUP_STATE_PATH);
+    await fsPromises.rename(tempPath, startupStatePath);
   } catch (error) {
     await fsPromises.unlink(tempPath).catch(() => undefined);
     throw error;

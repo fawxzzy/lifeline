@@ -1,4 +1,8 @@
 import {
+  getLifelineRoot,
+  getLifelineStateDirectory,
+} from "../core/lifeline-root.js";
+import {
   formatPreflightFailure,
   formatPreflightSuccess,
   runPreflightChecks,
@@ -11,6 +15,11 @@ export async function runDoctorCommand(args: string[] = []): Promise<number> {
     );
     return 1;
   }
+
+  console.log(`Resolved Lifeline home: ${getLifelineRoot()}`);
+  console.log(
+    `Resolved Lifeline state directory: ${getLifelineStateDirectory()}`,
+  );
 
   const report = await runPreflightChecks();
   if (report.ok) {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 
 import { ValidationError } from "./errors.js";
+import { getLifelineReceiptsDirectory } from "./lifeline-root.js";
 import {
   normalizeReceiptPath,
   stableJsonStringify,
@@ -379,16 +380,13 @@ export async function emitUiProofPassedReceipt(options: {
     source_refs: [proofSummaryRef, semanticReportRef, visualReportRef],
   };
 
-  const receiptDir =
-    options.receiptDir ??
-    path.resolve(
-      process.cwd(),
-      ".lifeline",
-      "receipts",
-      "proof-passed",
-      options.sourceRepoId,
-      options.trancheId,
-    );
+  const receiptDir = resolveUiProofPassedReceiptDirectory({
+    sourceRepoId: options.sourceRepoId,
+    trancheId: options.trancheId,
+    ...(options.receiptDir !== undefined
+      ? { receiptDir: options.receiptDir }
+      : {}),
+  });
   const receiptPath = path.join(
     receiptDir,
     `${receipt.receipt_id.replace(":", "-")}.json`,
@@ -399,4 +397,20 @@ export async function emitUiProofPassedReceipt(options: {
     receipt,
     receiptPath,
   };
+}
+
+export function resolveUiProofPassedReceiptDirectory(options: {
+  sourceRepoId: string;
+  trancheId: string;
+  receiptDir?: string;
+}): string {
+  return (
+    options.receiptDir ??
+    path.join(
+      getLifelineReceiptsDirectory(),
+      "proof-passed",
+      options.sourceRepoId,
+      options.trancheId,
+    )
+  );
 }

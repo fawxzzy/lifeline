@@ -1,6 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { getLifelineRoot } from "./lifeline-root.js";
+
 const WAVE1_RELEASE_RECEIPT_VERSION =
   "atlas.lifeline.release-receipt.v1";
 
@@ -290,7 +292,7 @@ function verifyFailedReceiptPreservesState(
 
 export async function replayWave1ReleaseReceipts(
   appName: string,
-  rootDir = process.cwd(),
+  rootDir = getLifelineRoot(),
 ): Promise<ReleaseReplayResult> {
   const resolvedRoot = path.resolve(rootDir);
   const receiptsDir = path.join(
@@ -340,7 +342,7 @@ export async function replayWave1ReleaseReceipts(
 
 export async function verifyWave1ReleaseReplay(
   appName: string,
-  rootDir = process.cwd(),
+  rootDir = getLifelineRoot(),
 ): Promise<ReleaseReplayVerificationResult> {
   const resolvedRoot = path.resolve(rootDir);
   const appReleaseRoot = path.join(

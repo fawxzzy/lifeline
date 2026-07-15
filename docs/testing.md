@@ -16,6 +16,9 @@ Run one deterministic script directly when you are debugging a single failure pa
 
 ```bash
 node scripts/test-resolve-config-deterministic.mjs
+
+# runtime-home placement, inheritance, and source-checkout isolation
+pnpm test:lifeline-root
 ```
 
 ### Grouped deterministic suite run

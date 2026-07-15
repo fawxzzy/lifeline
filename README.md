@@ -31,13 +31,13 @@ Lifeline stays intentionally narrower than the rest of the stack: it consumes ch
 
 Machine-readable roadmap truth lives in `docs/roadmap/LIFELINE_ROADMAP.json`. The deterministic owner export at `exports/lifeline.project-board.owner-export.v1.json` includes only non-complete work. `.playbook/plan.json` is verification-plan output and is not the Lifeline product roadmap.
 
-The next slice after repo hygiene remains a narrow architecture or contract slice inside Lifeline itself, but no implementation lane is ready until current evidence names a measured cost, control, reliability, or latency need. The sequence stays explicit:
+The external runtime-home placement contract in `LIF-201` is complete. The next owner lanes remain explicit:
 
-1. repo transport and setup
-2. repo hygiene and governance
-3. focused architecture slices
+1. wire the canonical Playbook `start:lifeline` runtime-home argument
+2. prove supervised Playbook Observer restart (`LIF-203`)
+3. prove Windows logon restoration for that supervisor (`LIF-204`)
 
-Current intake candidates are `LIF-201` (select one bounded evidence-backed contract slice) and `LIF-202` (evaluate another startup backend only after a concrete unsupported target platform is measured). Neither candidate authorizes hosted-platform growth.
+`LIF-202` remains a separate intake candidate for a measured unsupported platform. None of these lanes authorizes hosted-platform growth.
 
 ## Why Lifeline exists
 
@@ -96,6 +96,14 @@ pnpm lifeline proof-pass ../../runtime/atlas/ui-proof/fitness/latest.json \
   --tranche F11
 pnpm lifeline down runtime-smoke-app
 ```
+
+## Runtime home placement
+
+Lifeline resolves one runtime home before command dispatch and stores mutable operator state beneath `<resolved-home>/.lifeline/`. Select it with either global CLI form, `--root <path>` or `--root=<path>`, or with `LIFELINE_ROOT`. Precedence is CLI `--root`, then `LIFELINE_ROOT`, then the invoking process working directory. Relative CLI or environment values resolve from that invoking working directory, and the resolved absolute value is written back to `LIFELINE_ROOT` so detached supervisors inherit it.
+
+The runtime-home option does not change the process working directory, application working directories, manifest or Playbook path resolution, Atlas discovery, or unrelated repository semantics. Existing `--receipt-dir` options remain the more-specific receipt destination override.
+
+`pnpm lifeline doctor --root <path>` reports the resolved home and `<resolved-home>/.lifeline` state directory without creating either path.
 
 Proof-pass receipt refs normalize path-like values to forward slashes, and `proof-pass` prints a failure category plus a first remediation step when emission fails.
 
@@ -295,12 +303,15 @@ pnpm lifeline resolve fixtures/runtime-smoke-app/runtime-smoke-app.playbook.life
 
 ## Runtime state and logs
 
-Lifeline stores its local operator artifacts under `.lifeline/`:
+Lifeline stores its local operator artifacts under `<resolved-home>/.lifeline/`:
 
-- `.lifeline/state.json`: explicit runtime state keyed by app name, including stored manifest path, optional stored `playbookPath`, supervisor/child pids, restart metadata, and restore flags
-- `.lifeline/logs/<app-name>.log`: appended stdout/stderr logs for the managed process
+- `<resolved-home>/.lifeline/state.json`: explicit runtime state keyed by app name, including stored manifest path, optional stored `playbookPath`, supervisor/child pids, restart metadata, and restore flags
+- `<resolved-home>/.lifeline/logs/<app-name>.log`: appended stdout/stderr logs for the managed process
+- `<resolved-home>/.lifeline/startup.json`: machine-local startup intent and observed backend status
+- `<resolved-home>/.lifeline/releases/`: immutable release metadata, pointers, and release receipts
+- `<resolved-home>/.lifeline/receipts/`: privileged execution and proof-passed receipts unless `--receipt-dir` overrides the destination
 
-The directory is gitignored because it is machine-local runtime state, not source-controlled config.
+The default remains the invoking working directory for backward compatibility. An external runtime home keeps machine-local state out of a source checkout.
 
 ## Fixture apps and smoke verification
 
