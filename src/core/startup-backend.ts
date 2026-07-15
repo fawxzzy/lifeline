@@ -29,6 +29,7 @@ export interface StartupBackendRequest {
 export interface StartupBackendResult {
   status: StartupBackendStatus;
   detail: string;
+  ok?: boolean;
 }
 
 export interface StartupBackend {

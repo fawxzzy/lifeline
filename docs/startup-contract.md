@@ -14,6 +14,7 @@ Merged Wave 2 defines Lifeline's startup-registration seam and deterministic CLI
 lifeline startup status
 lifeline startup enable [--dry-run]
 lifeline startup disable [--dry-run]
+lifeline restore [--startup]
 ```
 
 Semantics:
@@ -24,6 +25,8 @@ Semantics:
 - `--dry-run`: print the plan without writing state or invoking backend install/uninstall mutations.
 
 The contract's canonical startup target is always `lifeline restore`; startup backends must reuse this entrypoint and must not introduce duplicate lifecycle logic.
+
+`restore --startup` is the bounded startup-registration mode. It preserves ordinary restore behavior while allowing a registered startup action to revive persisted `stopped` apps that are still marked restorable. It never revives non-restorable, blocked, or crash-loop apps. The startup action remains alive while its restored supervisors run so an operating-system launcher cannot close the restored process tree when the initial restore dispatch returns.
 
 Status output shape (deterministic):
 
@@ -78,9 +81,13 @@ Default `win32` backend resolution selects the `windows-task-scheduler` backend 
 
 Behavior:
 
-- `startup enable` attempts `schtasks /Create ...` for task `LifelineRestoreAtLogon` targeting `lifeline restore`.
-- `startup disable` attempts `schtasks /Delete ...` for task `LifelineRestoreAtLogon`.
-- `startup status` inspects the same task via `schtasks /Query ...` and reports `windows-task-scheduler` mechanism.
+- `startup enable` uses the single stable task identity `LifelineRestoreAtLogon` and registers an exact Task Scheduler XML definition only for the current user at logon.
+- The principal uses interactive-token logon with limited run level, the task is enabled and demand-startable, and `IgnoreNew` prevents overlapping task instances.
+- The action executes the active Node binary plus a content-addressed Lifeline `dist` snapshot beneath `<runtime-home>/.lifeline/startup/windows/`, passes `--root <runtime-home>` explicitly, sets the working directory to that runtime home, and invokes `restore --startup`.
+- An exact repeated enable is a no-op. Enable may reconcile a Lifeline-owned same-root drifted definition, but rejects any foreign or conflicting same-name task without overwrite.
+- `startup enable` may upgrade a recognized prior Lifeline definition only when its stable URI/author, current-user trigger/principal (SID or Scheduler-canonicalized account), canonical root, and versioned stable action all match the ownership contract. `startup disable` uses the same proof before removal; different-user, different-root, and foreign-action definitions are preserved and reported as errors.
+- `startup status` inspects the same task via `schtasks /Query ...` and reports `windows-task-scheduler` mechanism plus the exact root/action detail.
+- The startup restore action remains as a wrapper while restored supervisors are alive. After they exit, each restored app must prove a fresh `stopped` state with cleared child/listener identities and no failure marker; missing state, stale `running`, or any other non-stopped terminal fails the task. `lifeline down <app>` writes the accepted terminal state, after which the wrapper exits and Task Scheduler returns the task to Ready.
 - If Task Scheduler CLI is unavailable, backend detail is explicit and readiness resolves to `unsupported`.
 
 

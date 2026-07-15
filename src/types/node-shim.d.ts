@@ -12,6 +12,7 @@ declare module "node:fs/promises" {
     data: string,
     encoding: string,
   ): Promise<void>;
+  export function copyFile(source: string, destination: string): Promise<void>;
   export function mkdir(
     path: string,
     options?: { recursive?: boolean },
@@ -46,6 +47,10 @@ declare module "node:fs/promises" {
   }>;
 }
 
+declare module "node:url" {
+  export function fileURLToPath(url: URL): string;
+}
+
 declare module "node:fs" {
   export function createWriteStream(
     path: string,
@@ -70,17 +75,13 @@ declare module "node:path" {
 }
 
 declare module "node:crypto" {
-  export function createHash(algorithm: string): {
-    update(
-      data: string,
-      inputEncoding?: string,
-    ): {
-      digest(encoding: "hex"): string;
-    };
-    update(data: Uint8Array): {
-      digest(encoding: "hex"): string;
-    };
-  };
+  interface Hash {
+    update(data: string, inputEncoding?: string): Hash;
+    update(data: Uint8Array): Hash;
+    digest(encoding: "hex"): string;
+  }
+
+  export function createHash(algorithm: string): Hash;
 }
 
 declare module "node:os" {

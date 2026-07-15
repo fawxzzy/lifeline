@@ -36,9 +36,41 @@ async function readStartupState(cwd) {
   return JSON.parse(raw);
 }
 
+async function queryWindowsTaskXml() {
+  if (process.platform !== 'win32') return '';
+  try {
+    const { stdout } = await execFileAsync('schtasks.exe', [
+      '/Query',
+      '/TN',
+      'LifelineRestoreAtLogon',
+      '/XML',
+      'ONE',
+    ]);
+    return stdout;
+  } catch {
+    return '';
+  }
+}
+
+async function cleanupOwnedWindowsTask(cwd) {
+  const taskXml = await queryWindowsTaskXml();
+  if (!taskXml) return;
+  const ownershipMarker = `Managed by Lifeline Windows startup v3. Root: ${cwd}`;
+  assert(
+    taskXml.includes(ownershipMarker),
+    'Roundtrip cleanup refused to remove a pre-existing or foreign Windows task.',
+  );
+  await runLifeline(cwd, 'startup', 'disable');
+}
+
 async function main() {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'lifeline-startup-roundtrip-'));
+  assert(
+    !(await queryWindowsTaskXml()),
+    'Deterministic startup roundtrip requires the stable Windows task identity to be absent.',
+  );
 
+  try {
   const enableOutput = await runLifeline(tempDir, 'startup', 'enable');
   assert(enableOutput.includes('Startup intent enabled.'), 'Expected startup enable confirmation.');
 
@@ -91,6 +123,9 @@ async function main() {
   );
 
   console.log('Deterministic startup roundtrip verification passed (enable/status/disable).');
+  } finally {
+    await cleanupOwnedWindowsTask(tempDir);
+  }
 }
 
 main().catch((error) => {

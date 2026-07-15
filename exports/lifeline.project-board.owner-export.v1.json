@@ -1,11 +1,11 @@
 {
   "contract_version": "atlas.project-board.owner-export.v1",
-  "export_id": "pbe_lifeline_roadmap_40424792dc25",
+  "export_id": "pbe_lifeline_roadmap_7faf810dcf12",
   "project_id": "lifeline",
   "board_id": "discordos:project-feedback:lifeline",
   "owner": "lifeline",
   "adapter_id": "lifeline-roadmap-v1",
-  "source_revision": "sha256:40424792dc25e4962081e54f582ea722e2d262aac754e35c6355cdc17f5128ed",
+  "source_revision": "sha256:7faf810dcf12007228bb6c0d587ffc4ede6605d483557989dbd3e9461b50be09",
   "generated_at": "2026-07-15T00:00:00.000Z",
   "sources": [
     {
@@ -13,7 +13,7 @@
       "kind": "json",
       "repository": "lifeline",
       "path": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json",
-      "revision": "sha256:40424792dc25e4962081e54f582ea722e2d262aac754e35c6355cdc17f5128ed",
+      "revision": "sha256:7faf810dcf12007228bb6c0d587ffc4ede6605d483557989dbd3e9461b50be09",
       "observed_at": "2026-07-15T00:00:00.000Z"
     }
   ],
@@ -72,124 +72,12 @@
         "duplicate_of": null,
         "superseded_by": null
       }
-    },
-    {
-      "idempotency_key": "pbk_lifeline_lif-203_v1",
-      "record_kind": "project-work",
-      "record_status": "active",
-      "record": {
-        "contract_version": "atlas.card-record.v2",
-        "card_id": "LIF-203",
-        "project_id": "lifeline",
-        "board_id": "discordos:project-feedback:lifeline",
-        "title": "Supervised Playbook Observer restart proof",
-        "description": "Prove that the Playbook Observer can be started and restored under Lifeline supervision using the canonical external runtime home.",
-        "card_type": "reliability",
-        "lifecycle": "planning",
-        "priority": null,
-        "owner": "lifeline",
-        "dependencies": [
-          "LIF-201"
-        ],
-        "board_version": 1,
-        "updated_at": "2026-07-15T00:00:00.000Z",
-        "source_ref": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json#LIF-203",
-        "extensions": {
-          "roadmap_status": "planned",
-          "roadmap_schema_version": 1
-        }
-      },
-      "source": {
-        "source_id": "lifeline-roadmap",
-        "source_ref": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json#LIF-203",
-        "source_status": "current",
-        "source_updated_at": "2026-07-15T00:00:00.000Z"
-      },
-      "content": {
-        "summary": "Prove that the Playbook Observer can be started and restored under Lifeline supervision using the canonical external runtime home.",
-        "objective": "Prove that the Playbook Observer can be started and restored under Lifeline supervision using the canonical external runtime home.",
-        "acceptance_criteria": [
-          "Playbook start:lifeline wiring supplies the canonical Lifeline runtime-home argument.",
-          "Observer runtime paths remain separate from Lifeline supervisor state.",
-          "A bounded supervised restart proves state, log, pid, and health continuity.",
-          "The source checkout remains free of mutable .lifeline state."
-        ],
-        "discoveries": [],
-        "next_actions": [],
-        "blockers": [],
-        "evidence": [
-          "repos/lifeline/README.md",
-          "repos/lifeline/src/core/state-store.ts",
-          "repos/lifeline/src/core/supervisor.ts"
-        ]
-      },
-      "relationships": {
-        "parent_card_id": null,
-        "duplicate_of": null,
-        "superseded_by": null
-      }
-    },
-    {
-      "idempotency_key": "pbk_lifeline_lif-204_v1",
-      "record_kind": "project-work",
-      "record_status": "active",
-      "record": {
-        "contract_version": "atlas.card-record.v2",
-        "card_id": "LIF-204",
-        "project_id": "lifeline",
-        "board_id": "discordos:project-feedback:lifeline",
-        "title": "Windows logon restore contract and proof",
-        "description": "Prove Windows logon restoration for the supervised Playbook Observer after the supervised restart contract is established.",
-        "card_type": "reliability",
-        "lifecycle": "planning",
-        "priority": null,
-        "owner": "lifeline",
-        "dependencies": [
-          "LIF-203"
-        ],
-        "board_version": 1,
-        "updated_at": "2026-07-15T00:00:00.000Z",
-        "source_ref": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json#LIF-204",
-        "extensions": {
-          "roadmap_status": "planned",
-          "roadmap_schema_version": 1
-        }
-      },
-      "source": {
-        "source_id": "lifeline-roadmap",
-        "source_ref": "repos/lifeline/docs/roadmap/LIFELINE_ROADMAP.json#LIF-204",
-        "source_status": "current",
-        "source_updated_at": "2026-07-15T00:00:00.000Z"
-      },
-      "content": {
-        "summary": "Prove Windows logon restoration for the supervised Playbook Observer after the supervised restart contract is established.",
-        "objective": "Prove Windows logon restoration for the supervised Playbook Observer after the supervised restart contract is established.",
-        "acceptance_criteria": [
-          "The Windows startup backend restores through the canonical lifeline restore entrypoint.",
-          "The restored process inherits the canonical external Lifeline runtime home.",
-          "Logon proof records startup intent, task state, supervisor state, and Observer health.",
-          "Registration and proof remain bounded to the named Windows operator lane."
-        ],
-        "discoveries": [],
-        "next_actions": [],
-        "blockers": [],
-        "evidence": [
-          "repos/lifeline/docs/startup-contract.md",
-          "repos/lifeline/scripts/test-startup-roundtrip-windows-deterministic.mjs",
-          "repos/lifeline/src/core/startup-backends/windows-task-scheduler.ts"
-        ]
-      },
-      "relationships": {
-        "parent_card_id": null,
-        "duplicate_of": null,
-        "superseded_by": null
-      }
     }
   ],
   "extensions": {
-    "source_digest": "sha256:40424792dc25e4962081e54f582ea722e2d262aac754e35c6355cdc17f5128ed",
+    "source_digest": "sha256:7faf810dcf12007228bb6c0d587ffc4ede6605d483557989dbd3e9461b50be09",
     "source_work_item_count": 12,
-    "exported_card_count": 3,
+    "exported_card_count": 1,
     "excluded_completed_statuses": [
       "complete"
     ],

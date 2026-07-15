@@ -16,16 +16,14 @@ test("exports only the remaining honest Lifeline owner lanes", () => {
   assert.equal(roadmap.workItems.length, 12);
   assert.deepEqual(output.cards.map((card) => card.record.card_id), [
     "LIF-202",
-    "LIF-203",
-    "LIF-204",
   ]);
   assert.deepEqual(
     output.cards.map((card) => card.record_status),
-    ["candidate", "active", "active"],
+    ["candidate"],
   );
   assert.deepEqual(
     output.cards.map((card) => card.record.lifecycle),
-    ["intake", "planning", "planning"],
+    ["intake"],
   );
   assert.ok(output.cards.every((card) => card.record.priority === null));
   assert.equal(output.extensions.discord_mutation_authorized, false);
@@ -37,8 +35,10 @@ test("preserves owner boundaries and ATLAS-relative evidence", () => {
   assert.ok(output.cards.every((card) => card.record.owner === "lifeline"));
   assert.ok(output.cards.every((card) => card.content.evidence.every((ref) => ref.startsWith("repos/lifeline/"))));
   assert.equal(output.cards.find((card) => card.record.card_id === "LIF-202").record.dependencies[0], "LIF-201");
-  assert.equal(output.cards.find((card) => card.record.card_id === "LIF-203").record.dependencies[0], "LIF-201");
-  assert.equal(output.cards.find((card) => card.record.card_id === "LIF-204").record.dependencies[0], "LIF-203");
+  assert.equal(roadmap.workItems.find((item) => item.id === "LIF-203").dependencies[0], "LIF-201");
+  assert.equal(roadmap.workItems.find((item) => item.id === "LIF-204").dependencies[0], "LIF-203");
+  assert.equal(roadmap.workItems.find((item) => item.id === "LIF-203").status, "complete");
+  assert.equal(roadmap.workItems.find((item) => item.id === "LIF-204").status, "complete");
 });
 
 test("normalizes CRLF before hashing", () => {

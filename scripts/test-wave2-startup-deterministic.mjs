@@ -39,8 +39,89 @@ async function verifyRestoreEntrypointWiring() {
   );
 
   assert(
-    cliSource.includes("lifeline restore"),
+    cliSource.includes("lifeline [--root <path>] restore [--startup]") &&
+      cliSource.includes('runRestoreCommand({ startup: target === "--startup" })'),
     "Expected CLI usage output to keep the restore command discoverable.",
+  );
+
+  await ensureBuiltCli();
+  const {
+    getStartupRestoreTerminalFailure,
+    isPersistedStatusEligibleForRestore,
+  } = await import(
+    new URL("../dist/commands/restore.js", import.meta.url)
+  );
+  assert(
+    isPersistedStatusEligibleForRestore("stopped") === false &&
+      isPersistedStatusEligibleForRestore("stopped", { startup: true }) === true &&
+      isPersistedStatusEligibleForRestore("blocked", { startup: true }) === false &&
+      isPersistedStatusEligibleForRestore("crash-loop", { startup: true }) === false,
+    "Expected startup restore mode to include stopped apps without reviving blocked/crash-loop apps or changing ordinary restore semantics.",
+  );
+
+  const restored = {
+    name: "playbook",
+    supervisorPid: 4100,
+    startedAt: "2026-07-15T12:00:00.000Z",
+  };
+  const stoppedByDown = {
+    name: "playbook",
+    supervisorPid: 4100,
+    childPid: undefined,
+    wrapperPid: undefined,
+    listenerPid: undefined,
+    portOwnerPid: undefined,
+    lastKnownStatus: "stopped",
+    lastExitAt: "2026-07-15T12:00:05.000Z",
+    blockedReason: undefined,
+    crashLoopDetected: false,
+  };
+  assert(
+    getStartupRestoreTerminalFailure(
+      [restored],
+      { apps: { playbook: stoppedByDown } },
+    ) === undefined,
+    "Expected normal lifeline down terminal state to let the startup wrapper succeed.",
+  );
+  assert(
+    getStartupRestoreTerminalFailure(
+      [restored],
+      {
+        apps: {
+          playbook: {
+            ...stoppedByDown,
+            childPid: 4200,
+            lastKnownStatus: "running",
+            lastExitAt: undefined,
+          },
+        },
+      },
+    )?.includes("persisted status is running"),
+    "Expected unexpected supervisor disappearance with stale running state to fail closed.",
+  );
+  assert(
+    getStartupRestoreTerminalFailure([restored], { apps: {} })?.includes(
+      "runtime state is missing",
+    ),
+    "Expected missing restored-app state to fail closed.",
+  );
+  assert(
+    getStartupRestoreTerminalFailure(
+      [restored],
+      {
+        apps: {
+          playbook: { ...stoppedByDown, supervisorPid: 4101 },
+        },
+      },
+    )?.includes("supervisor identity changed"),
+    "Expected terminal state for a different supervisor identity to fail closed.",
+  );
+  assert(
+    getStartupRestoreTerminalFailure(
+      [restored],
+      { apps: { playbook: { ...stoppedByDown, lastExitAt: undefined } } },
+    )?.includes("lacks a terminal timestamp"),
+    "Expected stale stopped state without a terminal transition for this restore to fail closed.",
   );
 }
 
@@ -57,6 +138,10 @@ async function verifyContractSurfaceWiring() {
     new URL("../src/core/startup-backend.ts", import.meta.url),
     "utf8",
   );
+  const restoreCommandSource = await readFile(
+    new URL("../src/commands/restore.ts", import.meta.url),
+    "utf8",
+  );
 
   assert(
     startupCommandSource.includes("--dry-run"),
@@ -70,8 +155,9 @@ async function verifyContractSurfaceWiring() {
 
   assert(
     startupCommandSource.includes("backend.install") &&
-      startupCommandSource.includes("backend.uninstall"),
-    "Expected startup command to wire enable/disable through backend install and uninstall calls.",
+      startupCommandSource.includes("backend.uninstall") &&
+      startupCommandSource.includes("backendResult.ok === false"),
+    "Expected startup command to wire enable/disable through backend calls and fail closed on rejected mutations.",
   );
 
   assert(
@@ -82,6 +168,13 @@ async function verifyContractSurfaceWiring() {
   assert(
     startupCoreSource.includes('restoreEntrypoint: "lifeline restore"'),
     "Expected startup core to keep restore entrypoint as lifeline restore.",
+  );
+
+  assert(
+    restoreCommandSource.includes("holdStartupRestoreWrapper") &&
+      restoreCommandSource.includes("startDetachedExecutable") &&
+      restoreCommandSource.includes("restoredSupervisorPids"),
+    "Expected startup restore mode to launch the exact supervisor directly and keep the scheduler action alive while it runs.",
   );
 }
 
@@ -395,6 +488,300 @@ async function verifyFreebsdRcDBackendDeterministicBehavior() {
   assert(
     inspectAfterUninstall.status === "not-installed",
     `Expected FreeBSD inspect status not-installed after uninstall, got ${inspectAfterUninstall.status}.`,
+  );
+}
+
+async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
+  await ensureBuiltCli();
+
+  const { access, mkdir, mkdtemp, readFile, writeFile } = await import(
+    "node:fs/promises"
+  );
+  const { createWindowsTaskSchedulerBackend } = await import(
+    new URL(
+      "../dist/core/startup-backends/windows-task-scheduler.js",
+      import.meta.url,
+    )
+  );
+
+  const tempRoot = await mkdtemp(
+    path.join(os.tmpdir(), "lifeline-windows-backend-"),
+  );
+  const runtimeRoot = path.join(tempRoot, "runtime-home");
+  const sourceDirectory = path.join(tempRoot, "worktree-dist");
+  const sourceCli = path.join(sourceDirectory, "cli.js");
+  await mkdir(sourceDirectory, { recursive: true });
+  await writeFile(sourceCli, "console.log('fixture');\n", "utf8");
+  await writeFile(
+    path.join(sourceDirectory, "support.js"),
+    "export const fixture = true;\n",
+    "utf8",
+  );
+
+  let registeredXml = "";
+  const invocations = [];
+  const runner = async (args) => {
+    invocations.push([...args]);
+    if (args[0] === "/Query") {
+      return registeredXml
+        ? { code: 0, stdout: registeredXml, stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+    }
+    if (args[0] === "/Create") {
+      const xmlPath = args[args.indexOf("/XML") + 1];
+      registeredXml = await readFile(xmlPath, "utf8");
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    if (args[0] === "/Delete") {
+      registeredXml = "";
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    throw new Error(`Unexpected schtasks fixture call: ${args.join(" ")}`);
+  };
+
+  const options = {
+    rootDirectory: runtimeRoot,
+    nodeExecutable: "C:\\Program Files\\nodejs\\node.exe",
+    cliEntrypoint: sourceCli,
+    identity: {
+      account: "ATLAS\\operator",
+      sid: "S-1-5-21-111-222-333-1001",
+    },
+  };
+  const backend = createWindowsTaskSchedulerBackend(runner, options);
+  const request = {
+    scope: "machine-local",
+    restoreEntrypoint: "lifeline restore",
+    dryRun: false,
+  };
+
+  const dryRun = await backend.install({ ...request, dryRun: true });
+  assert(
+    dryRun.status === "not-installed" && dryRun.ok !== false,
+    `Expected absent Windows dry-run to be actionable, got ${JSON.stringify(dryRun)}.`,
+  );
+  const runtimeStateExists = await access(path.join(runtimeRoot, ".lifeline"))
+    .then(() => true)
+    .catch(() => false);
+  assert(
+    runtimeStateExists === false,
+    "Windows startup dry-run must not create launcher or state paths.",
+  );
+
+  const installResult = await backend.install(request);
+  assert(
+    installResult.status === "installed" && installResult.ok !== false,
+    `Expected Windows startup install to succeed, got ${JSON.stringify(installResult)}.`,
+  );
+  assert(
+    registeredXml.includes("<LogonTrigger>") &&
+      registeredXml.includes("S-1-5-21-111-222-333-1001") &&
+      registeredXml.includes("<LogonType>InteractiveToken</LogonType>") &&
+      registeredXml.includes("<RunLevel>LeastPrivilege</RunLevel>") &&
+      registeredXml.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"),
+    `Expected exact current-user/least-privilege logon definition.\n${registeredXml}`,
+  );
+  assert(
+    registeredXml.includes("--root") &&
+      registeredXml.includes("restore --startup") &&
+      registeredXml.includes(runtimeRoot) &&
+      !registeredXml.includes(sourceDirectory),
+    `Expected scheduler action to use an explicit root and stable runtime launcher, not source worktree.\n${registeredXml}`,
+  );
+  const createCallsAfterInstall = invocations.filter(
+    ([command]) => command === "/Create",
+  );
+  assert(
+    createCallsAfterInstall.length === 1 &&
+      !createCallsAfterInstall[0].includes("/F"),
+    "First Windows registration must create without force-overwriting a same-name task.",
+  );
+
+  const firstDefinition = registeredXml;
+  const reenableResult = await backend.install(request);
+  assert(
+    reenableResult.status === "installed" &&
+      invocations.filter(([command]) => command === "/Create").length === 1 &&
+      registeredXml === firstDefinition,
+    "Repeated Windows startup enable must preserve the exact definition without creating a duplicate.",
+  );
+
+  registeredXml = registeredXml.replace(
+    "<RunLevel>LeastPrivilege</RunLevel>",
+    "<RunLevel>HighestAvailable</RunLevel>",
+  );
+  const reconcileResult = await backend.install(request);
+  const reconcileCreate = invocations.filter(
+    ([command]) => command === "/Create",
+  ).at(-1);
+  assert(
+    reconcileResult.status === "installed" &&
+      reconcileCreate?.includes("/F") &&
+      registeredXml === firstDefinition,
+    "Lifeline-owned same-root drift must reconcile through one forced update after ownership validation.",
+  );
+
+  const v2Definition = firstDefinition
+    .replace("Windows startup v3.", "Windows startup v2.")
+    .replace(" restore --startup</Arguments>", " restore</Arguments>");
+  registeredXml = v2Definition;
+  const v2UpgradeResult = await backend.install(request);
+  assert(
+    v2UpgradeResult.status === "installed" &&
+      invocations
+        .filter(([command]) => command === "/Create")
+        .at(-1)
+        ?.includes("/F") &&
+      registeredXml === firstDefinition,
+    "A Lifeline v2 task with the same root and recognized stable action must upgrade to v3.",
+  );
+
+  registeredXml = v2Definition.replaceAll(
+    "S-1-5-21-111-222-333-1001",
+    "ATLAS\\operator",
+  );
+  const canonicalizedIdentityUpgrade = await backend.install(request);
+  assert(
+    canonicalizedIdentityUpgrade.status === "installed" &&
+      registeredXml === firstDefinition,
+    "A same-current-user v2 task must remain upgradeable when Scheduler canonicalizes SID fields to the account name.",
+  );
+
+  registeredXml = v2Definition;
+  const v2RemoveResult = await backend.uninstall(request);
+  assert(
+    v2RemoveResult.status === "not-installed" && registeredXml === "",
+    "A Lifeline v2 task with the same root and recognized stable action must remain safely removable.",
+  );
+
+  const differentRoot = path.join(tempRoot, "different-runtime-home");
+  registeredXml = v2Definition
+    .replaceAll(runtimeRoot, differentRoot)
+    .replaceAll(runtimeRoot.replaceAll("&", "&amp;"), differentRoot);
+  const createsBeforeDifferentRoot = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const deletesBeforeDifferentRoot = invocations.filter(
+    ([command]) => command === "/Delete",
+  ).length;
+  const differentRootInstall = await backend.install(request);
+  const differentRootUninstall = await backend.uninstall(request);
+  assert(
+    differentRootInstall.ok === false &&
+      differentRootUninstall.ok === false &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeDifferentRoot &&
+      invocations.filter(([command]) => command === "/Delete").length ===
+        deletesBeforeDifferentRoot,
+    "A Lifeline-looking v2 task for a different canonical root must be rejected without mutation.",
+  );
+
+  registeredXml = v2Definition.replaceAll(
+    "S-1-5-21-111-222-333-1001",
+    "S-1-5-21-999-888-777-1002",
+  );
+  const createsBeforeDifferentUser = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const deletesBeforeDifferentUser = invocations.filter(
+    ([command]) => command === "/Delete",
+  ).length;
+  const differentUserInstall = await backend.install(request);
+  const differentUserUninstall = await backend.uninstall(request);
+  assert(
+    differentUserInstall.ok === false &&
+      differentUserUninstall.ok === false &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeDifferentUser &&
+      invocations.filter(([command]) => command === "/Delete").length ===
+        deletesBeforeDifferentUser,
+    "A Lifeline-looking same-root v2 task assigned to another user must be rejected without mutation.",
+  );
+
+  registeredXml = v2Definition.replace(
+    " restore</Arguments>",
+    " status</Arguments>",
+  );
+  const foreignActionInstall = await backend.install(request);
+  const foreignActionUninstall = await backend.uninstall(request);
+  assert(
+    foreignActionInstall.ok === false &&
+      foreignActionUninstall.ok === false &&
+      registeredXml.includes(" status</Arguments>"),
+    "A Lifeline-looking v2 task with a foreign action must be rejected without mutation.",
+  );
+
+  registeredXml = `<?xml version="1.0"?><Task><RegistrationInfo><Author>Foreign</Author><Description>Foreign task</Description><URI>\\LifelineRestoreAtLogon</URI></RegistrationInfo></Task>`;
+  const createsBeforeConflict = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const deletesBeforeConflict = invocations.filter(
+    ([command]) => command === "/Delete",
+  ).length;
+  const conflictInstall = await backend.install(request);
+  const conflictUninstall = await backend.uninstall(request);
+  assert(
+    conflictInstall.ok === false &&
+      conflictUninstall.ok === false &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeConflict &&
+      invocations.filter(([command]) => command === "/Delete").length ===
+        deletesBeforeConflict &&
+      registeredXml.includes("<Author>Foreign</Author>"),
+    "Foreign same-name task definitions must be rejected without overwrite or removal.",
+  );
+
+  registeredXml = firstDefinition;
+  const uninstallResult = await backend.uninstall(request);
+  assert(
+    uninstallResult.status === "not-installed" && registeredXml === "",
+    "Exact Lifeline-owned Windows task must remain removable through the backend.",
+  );
+
+  let rollbackXml = "";
+  const rollbackInvocations = [];
+  const rollbackRunner = async (args) => {
+    rollbackInvocations.push([...args]);
+    if (args[0] === "/Query") {
+      return rollbackXml
+        ? { code: 0, stdout: rollbackXml, stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+    }
+    if (args[0] === "/Create") {
+      const xmlPath = args[args.indexOf("/XML") + 1];
+      rollbackXml = (await readFile(xmlPath, "utf8")).replace(
+        " restore --startup</Arguments>",
+        " status</Arguments>",
+      );
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    if (args[0] === "/Delete") {
+      rollbackXml = "";
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    throw new Error(
+      `Unexpected rollback schtasks fixture call: ${args.join(" ")}`,
+    );
+  };
+  const rollbackBackend = createWindowsTaskSchedulerBackend(
+    rollbackRunner,
+    options,
+  );
+  const rollbackResult = await rollbackBackend.install(request);
+  assert(
+    rollbackResult.ok === false &&
+      rollbackResult.detail.includes("rolled back") &&
+      rollbackXml === "" &&
+      rollbackInvocations.some(([command]) => command === "/Delete"),
+    "A newly created task that fails exact readback must be rolled back through the owned task identity.",
   );
 }
 
@@ -793,6 +1180,7 @@ async function main() {
   await verifyContractSurfaceWiring();
   await verifySeamInstallDisableStatusAndDryRun();
   await verifyBackendResolutionCoverageAndFallback();
+  await verifyWindowsTaskSchedulerBackendDeterministicBehavior();
   await verifyFreebsdRcDBackendDeterministicBehavior();
   await verifyAixInittabBackendDeterministicBehavior();
   await verifyLaunchdBackendDeterministicBehavior();

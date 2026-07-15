@@ -165,7 +165,7 @@
     {
       "id": "LIF-203",
       "title": "Supervised Playbook Observer restart proof",
-      "status": "planned",
+      "status": "complete",
       "goal": "Prove that the Playbook Observer can be started and restored under Lifeline supervision using the canonical external runtime home.",
       "type": "reliability",
       "priority": null,
@@ -181,7 +181,7 @@
     {
       "id": "LIF-204",
       "title": "Windows logon restore contract and proof",
-      "status": "planned",
+      "status": "complete",
       "goal": "Prove Windows logon restoration for the supervised Playbook Observer after the supervised restart contract is established.",
       "type": "reliability",
       "priority": null,
@@ -192,7 +192,14 @@
         "Logon proof records startup intent, task state, supervisor state, and Observer health.",
         "Registration and proof remain bounded to the named Windows operator lane."
       ],
-      "evidence": ["docs/startup-contract.md", "src/core/startup-backends/windows-task-scheduler.ts", "scripts/test-startup-roundtrip-windows-deterministic.mjs"]
+      "evidence": [
+        "README.md",
+        "docs/startup-contract.md",
+        "src/commands/restore.ts",
+        "src/core/startup-backends/windows-task-scheduler.ts",
+        "scripts/test-wave2-startup-deterministic.mjs",
+        "scripts/test-startup-roundtrip-windows-deterministic.mjs"
+      ]
     }
   ]
 }

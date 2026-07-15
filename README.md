@@ -31,11 +31,7 @@ Lifeline stays intentionally narrower than the rest of the stack: it consumes ch
 
 Machine-readable roadmap truth lives in `docs/roadmap/LIFELINE_ROADMAP.json`. The deterministic owner export at `exports/lifeline.project-board.owner-export.v1.json` includes only non-complete work. `.playbook/plan.json` is verification-plan output and is not the Lifeline product roadmap.
 
-The external runtime-home placement contract in `LIF-201` is complete. The next owner lanes remain explicit:
-
-1. wire the canonical Playbook `start:lifeline` runtime-home argument
-2. prove supervised Playbook Observer restart (`LIF-203`)
-3. prove Windows logon restoration for that supervisor (`LIF-204`)
+The external runtime-home placement contract (`LIF-201`), supervised Playbook Observer restart proof (`LIF-203`), and Windows logon restoration proof (`LIF-204`) are complete. Windows startup now restores a stopped/restorable app through a current-user logon task, an explicit runtime home, and a stable launcher snapshot beneath that runtime home.
 
 `LIF-202` remains a separate intake candidate for a measured unsupported platform. None of these lanes authorizes hosted-platform growth.
 
@@ -245,6 +241,10 @@ Current merged Wave 2 startup-contract behavior:
 - `startup status` reports support, enabled intent, backend install status, scope, canonical restore entrypoint (`lifeline restore`), mechanism, and backend detail from seam inspection.
 - `--dry-run` prints the planned startup action without mutating `.lifeline/startup.json` or performing backend install/uninstall writes.
 - Current Windows (`win32`) behavior uses a real Task Scheduler backend (`windows-task-scheduler`) in default CLI backend selection.
+- Windows registration uses the single stable task identity `LifelineRestoreAtLogon`, a current-user logon trigger/principal, limited run level, and `IgnoreNew` multiple-instance policy.
+- The Windows task action runs a content-addressed Lifeline `dist` snapshot beneath `<runtime-home>/.lifeline/startup/windows/`, passes the runtime home explicitly with `--root`, and never depends on the enabling source worktree after registration.
+- Windows enable is idempotent for an exact definition, upgrades only recognized prior Lifeline definitions with the stable URI/author, same current-user trigger/principal, canonical root, and expected stable action, and rejects a different-user, different-root, or foreign-action same-name task without overwrite. Disable applies the same ownership proof before removal.
+- The task uses `lifeline restore --startup`: ordinary `lifeline restore` still skips intentionally stopped apps, while startup mode may revive a stopped app only when it remains `restorable: true`. The startup wrapper stays alive with restored supervisors so Task Scheduler does not close their process tree; after the supervisors exit, every restored app must have a fresh, fully cleared `stopped` terminal state or the task fails closed. `lifeline down` establishes that terminal state and lets the wrapper exit cleanly.
 - Current Linux (`linux`) behavior uses a real user-systemd backend (`systemd-user`) in default CLI backend selection.
 - Current macOS (`darwin`) behavior uses a real launchd LaunchAgent backend (`launchd-agent`) in default CLI backend selection.
 - Current FreeBSD (`freebsd`) behavior uses a real rc.d backend (`freebsd-rc.d`) that installs `lifeline_restore` and enables it via `/etc/rc.conf.d/lifeline_restore`.
