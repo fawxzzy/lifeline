@@ -1506,6 +1506,51 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   const v2Definition = firstDefinition
     .replace("Windows startup v4.", "Windows startup v2.")
     .replace(" restore --startup</Arguments>", " restore</Arguments>");
+
+  const preV2NoRootDefinition = firstDefinition
+    .replace("    <Author>Lifeline</Author>\n", "")
+    .replace(/ {4}<Description>.*<\/Description>\n/, "")
+    .replace("    <URI>\\LifelineRestoreAtLogon</URI>\n", "")
+    .replace(
+      / {2}<Actions Context="Author">[\s\S]*? {2}<\/Actions>/,
+      `  <Actions Context="Author">
+    <Exec>
+      <Command>lifeline</Command>
+      <Arguments>restore</Arguments>
+    </Exec>
+  </Actions>`,
+    );
+  assert(
+    !preV2NoRootDefinition.includes(runtimeRoot) &&
+      !preV2NoRootDefinition.includes("Windows startup v") &&
+      !preV2NoRootDefinition.includes("<URI>\\LifelineRestoreAtLogon</URI>"),
+    "The pre-v2 fixture must lack a provable canonical root, stable Lifeline version marker, and stable task URI.",
+  );
+  registeredXml = preV2NoRootDefinition;
+  const createsBeforePreV2Conflict = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const deletesBeforePreV2Conflict = invocations.filter(
+    ([command]) => command === "/Delete",
+  ).length;
+  const preV2Inspection = await backend.inspect();
+  const preV2Install = await backend.install(request);
+  const preV2Uninstall = await backend.uninstall(request);
+  assert(
+    preV2Inspection.status === "not-installed" &&
+      preV2Inspection.detail.includes("foreign or conflicting") &&
+      preV2Install.ok === false &&
+      preV2Uninstall.ok === false &&
+      preV2Install.detail.includes("foreign or conflicting") &&
+      preV2Uninstall.detail.includes("foreign or conflicting") &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforePreV2Conflict &&
+      invocations.filter(([command]) => command === "/Delete").length ===
+        deletesBeforePreV2Conflict &&
+      registeredXml === preV2NoRootDefinition,
+    "A pre-v2 name/action-only task without stable Lifeline ownership or a provable canonical root must classify as conflict for status, enable, and disable without mutation.",
+  );
+
   registeredXml = v2Definition.replace(
     "  </Principals>",
     `    <Principal id="Foreign">
