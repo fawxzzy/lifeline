@@ -12,6 +12,7 @@
 - Bound failed startup cleanup to the exact supervisor PIDs launched by that invocation so a newer replacement supervisor and its persisted state are never stopped or overwritten.
 - Removed the optional `ONE` XML type token from exact-task Scheduler queries, retaining behavior on the proof host while aligning readback with the documented `/XML` flag form across Windows versions.
 - Cleared transient crash-loop/blocked markers after successful PID-owned down while preserving them on failed down, and treated stable-launcher metadata symmetrically as generated non-payload content during hash/copy/compare.
+- Made concurrent Windows startup enables converge on one exact v4 task: a losing create accepts the winner's exact definition, while non-exact or ambiguous readback is preserved and fails closed without unproven deletion authority.
 - Added bounded `restore --startup` semantics so enabled logon restoration can revive stopped/restorable apps without changing ordinary restore behavior, while a long-lived task wrapper preserves the supervised process tree until `lifeline down` completes.
 - Completed the supervised Playbook restart and Windows logon-restore roadmap lanes with real manual Task Scheduler execution, stable runtime placement, canonical Observer health, singleton process proof, and clean stopped/task-enabled convergence.
 - WHY: A short-lived scheduled restore action could otherwise lose its child supervisor when Task Scheduler closed the completed action tree, and a worktree-bound launcher or manifest would not survive owner worktree archival.

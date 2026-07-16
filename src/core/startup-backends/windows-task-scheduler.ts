@@ -917,48 +917,6 @@ function normalizeTaskXmlForComparison(xml: string): string {
     .trim();
 }
 
-async function removeNewlyCreatedTaskAfterFailedReadback(
-  runner: WindowsSchedulerRunner,
-): Promise<{ verified: boolean; detail: string }> {
-  const deleteResult = await runner([
-    "/Delete",
-    "/TN",
-    WINDOWS_STARTUP_TASK_NAME,
-    "/F",
-  ]);
-  if (deleteResult.code !== 0 && !isTaskMissing(deleteResult)) {
-    return {
-      verified: false,
-      detail: `Rollback also failed: ${
-        deleteResult.stderr ||
-        deleteResult.stdout ||
-        "unknown scheduler delete error"
-      }`,
-    };
-  }
-
-  const readback = await runner([
-    "/Query",
-    "/TN",
-    WINDOWS_STARTUP_TASK_NAME,
-    "/XML",
-  ]);
-  return readback.code !== 0 && isTaskMissing(readback)
-    ? {
-        verified: true,
-        detail:
-          "The newly created packet-owned registration was rolled back and absence was verified.",
-      }
-    : {
-        verified: false,
-        detail: `Rollback deletion could not be verified: ${
-          readback.stderr ||
-          readback.stdout ||
-          "task still returned a scheduler definition"
-        }`,
-      };
-}
-
 async function restorePriorOwnedTaskAfterFailedReadback(
   runner: WindowsSchedulerRunner,
   launcher: LauncherPlan,
@@ -1016,6 +974,7 @@ async function reconcileFailedTaskCreation(
   runner: WindowsSchedulerRunner,
   inspection: DetailedTaskInspection,
 ): Promise<{
+  accepted: boolean;
   verified: boolean;
   status: "installed" | "not-installed";
   detail: string;
@@ -1023,6 +982,7 @@ async function reconcileFailedTaskCreation(
   const expected = inspection.expected;
   if (!expected) {
     return {
+      accepted: false,
       verified: false,
       status: "installed",
       detail:
@@ -1043,6 +1003,7 @@ async function reconcileFailedTaskCreation(
         normalizeTaskXmlForComparison(inspection.existingXml)
     ) {
       return {
+        accepted: false,
         verified: true,
         status: "installed",
         detail:
@@ -1055,6 +1016,7 @@ async function reconcileFailedTaskCreation(
       inspection.existingXml,
     );
     return {
+      accepted: false,
       verified: restoration.verified,
       status: "installed",
       detail: restoration.verified
@@ -1065,28 +1027,27 @@ async function reconcileFailedTaskCreation(
 
   if (readback.code !== 0 && isTaskMissing(readback)) {
     return {
+      accepted: false,
       verified: true,
       status: "not-installed",
       detail: "The task remained absent and absence was verified.",
     };
   }
-  if (
-    readback.code === 0 &&
-    (matchesExpectedTask(readback.stdout, expected) ||
-      isLifelineOwnedTask(readback.stdout, expected))
-  ) {
-    const removal = await removeNewlyCreatedTaskAfterFailedReadback(runner);
+  if (readback.code === 0 && matchesExpectedTask(readback.stdout, expected)) {
     return {
-      verified: removal.verified,
-      status: removal.verified ? "not-installed" : "installed",
-      detail: removal.detail,
+      accepted: true,
+      verified: true,
+      status: "installed",
+      detail:
+        "The exact current-v4 task is installed and verified; enable converged with a concurrent registration without deleting it.",
     };
   }
 
   return {
+    accepted: false,
     verified: false,
     status: "installed",
-    detail: `FAIL-CLOSED BLOCKER: create transaction left task ownership or absence ambiguous: ${
+    detail: `FAIL-CLOSED BLOCKER: create transaction did not prove absence or the exact expected task; the observed task was preserved because this invocation cannot prove mutation ownership: ${
       readback.stderr ||
       readback.stdout ||
       "scheduler query did not prove absence"
@@ -1191,6 +1152,16 @@ export function createWindowsTaskSchedulerBackend(
           runner,
           inspection,
         );
+        if (reconciliation.accepted) {
+          return {
+            status: reconciliation.status,
+            detail: `Task ${WINDOWS_STARTUP_TASK_NAME} enable converged after this invocation's create returned ${
+              createResult.stderr ||
+              createResult.stdout ||
+              "an unknown scheduler error"
+            }. ${reconciliation.detail}`,
+          };
+        }
         return {
           status: reconciliation.status,
           ok: false,
@@ -1209,6 +1180,12 @@ export function createWindowsTaskSchedulerBackend(
       const readback = await inspectTaskDetailed(runner, options);
       if (readback.state !== "installed" || !readback.expected) {
         const rollback = await reconcileFailedTaskCreation(runner, inspection);
+        if (rollback.accepted) {
+          return {
+            status: rollback.status,
+            detail: `Task ${WINDOWS_STARTUP_TASK_NAME} reached the exact current-user definition during readback reconciliation. ${rollback.detail}`,
+          };
+        }
         return {
           status: rollback.status,
           ok: false,

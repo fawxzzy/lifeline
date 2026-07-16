@@ -1386,10 +1386,11 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   const rollbackResult = await rollbackBackend.install(request);
   assert(
     rollbackResult.ok === false &&
-      rollbackResult.detail.includes("rolled back") &&
-      rollbackXml === "" &&
-      rollbackInvocations.some(([command]) => command === "/Delete"),
-    "A newly created task that fails exact readback must be rolled back through the owned task identity.",
+      rollbackResult.status === "installed" &&
+      rollbackResult.detail.includes("observed task was preserved") &&
+      rollbackXml.includes("<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>") &&
+      !rollbackInvocations.some(([command]) => command === "/Delete"),
+    "An absent-state create whose exact readback drifts must fail closed without deleting a task that may belong to a concurrent enable.",
   );
 
   let upgradeRollbackXml = v2Definition;
@@ -1480,12 +1481,64 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   const failedAbsentCreateResult =
     await failedAbsentCreateBackend.install(request);
   assert(
-    failedAbsentCreateResult.ok === false &&
-      failedAbsentCreateResult.status === "not-installed" &&
-      failedAbsentCreateResult.detail.includes("absence was verified") &&
-      failedAbsentCreateXml === "" &&
-      failedAbsentCreateInvocations.some(([command]) => command === "/Delete"),
-    "A nonzero create that leaves a new expected task must remove only that packet-owned task and verify absence.",
+    failedAbsentCreateResult.ok !== false &&
+      failedAbsentCreateResult.status === "installed" &&
+      failedAbsentCreateResult.detail.includes("enable converged") &&
+      failedAbsentCreateResult.detail.includes("concurrent registration") &&
+      failedAbsentCreateXml !== "" &&
+      !failedAbsentCreateInvocations.some(([command]) => command === "/Delete"),
+    "When concurrent enables both inspect absence, the losing create must accept the winning exact-v4 task as installed convergence without deleting it.",
+  );
+
+  let conflictingConcurrentXml = "";
+  const conflictingConcurrentInvocations = [];
+  const conflictingConcurrentRunner = async (args) => {
+    conflictingConcurrentInvocations.push([...args]);
+    if (args[0] === "/Query") {
+      return conflictingConcurrentXml
+        ? { code: 0, stdout: conflictingConcurrentXml, stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+    }
+    if (args[0] === "/Create") {
+      const xmlPath = args[args.indexOf("/XML") + 1];
+      conflictingConcurrentXml = (await readFile(xmlPath, "utf8")).replace(
+        "<Author>Lifeline</Author>",
+        "<Author>Foreign</Author>",
+      );
+      return {
+        code: 1,
+        stdout: "",
+        stderr: "fixture conflicting concurrent create",
+      };
+    }
+    if (args[0] === "/Delete") {
+      throw new Error("Conflicting concurrent task must never be deleted.");
+    }
+    throw new Error(
+      `Unexpected conflicting-concurrent fixture call: ${args.join(" ")}`,
+    );
+  };
+  const conflictingConcurrentBackend = createWindowsTaskSchedulerBackend(
+    conflictingConcurrentRunner,
+    options,
+  );
+  const conflictingConcurrentResult =
+    await conflictingConcurrentBackend.install(request);
+  assert(
+    conflictingConcurrentResult.ok === false &&
+      conflictingConcurrentResult.status === "installed" &&
+      conflictingConcurrentResult.detail.includes(
+        "observed task was preserved",
+      ) &&
+      conflictingConcurrentXml.includes("<Author>Foreign</Author>") &&
+      !conflictingConcurrentInvocations.some(
+        ([command]) => command === "/Delete",
+      ),
+    "A losing absent-state create that reads a foreign or non-exact concurrent task must preserve it and fail closed without deletion authority.",
   );
 
   let failedUpgradeChangedXml = v2Definition;
