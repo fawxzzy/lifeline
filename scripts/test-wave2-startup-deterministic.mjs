@@ -1029,6 +1029,20 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "Windows startup v3.",
   );
   registeredXml = v3Definition;
+  const createsBeforeV3DryRun = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const v3DryRun = await backend.install({ ...request, dryRun: true });
+  assert(
+    v3DryRun.status === "not-installed" &&
+      v3DryRun.ok !== false &&
+      v3DryRun.detail.includes("would reconcile") &&
+      v3DryRun.detail.includes("exact current-v4 definition") &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeV3DryRun &&
+      registeredXml === v3Definition,
+    "Recognized owned drift must produce an actionable, non-mutating enable dry-run plan that predicts the real v4 upgrade.",
+  );
   const v3UpgradeResult = await backend.install(request);
   assert(
     v3UpgradeResult.status === "installed" && registeredXml === firstDefinition,

@@ -240,6 +240,7 @@ Current merged Wave 2 startup-contract behavior:
 - `startup disable` calls backend seam `uninstall` and persists intent to disabled in `.lifeline/startup.json`.
 - `startup status` reports support, enabled intent, backend install status, scope, canonical restore entrypoint (`lifeline restore`), mechanism, and backend detail from seam inspection.
 - `--dry-run` prints the planned startup action without mutating `.lifeline/startup.json` or performing backend install/uninstall writes.
+- Windows enable dry-run reports recognized same-root owned drift as an actionable v4 reconciliation plan; foreign/conflicting definitions remain blocked.
 - Current Windows (`win32`) behavior uses a real Task Scheduler backend (`windows-task-scheduler`) in default CLI backend selection.
 - Windows registration uses the single stable task identity `LifelineRestoreAtLogon`, a current-user logon trigger/principal, limited run level, exactly one Lifeline `Exec` action, `IgnoreNew`, and the complete battery/idle/demand-start/time-limit reliability settings contract.
 - The Windows task action runs a byte-verified, content-addressed Lifeline `dist` snapshot beneath `<runtime-home>/.lifeline/startup/windows/`, passes the runtime home explicitly with `--root`, and never depends on the enabling source worktree after registration. Re-enable repairs corrupt or incomplete snapshot contents even when launcher metadata still claims the expected hash. Roots equal to or nested beneath the active `dist` source, and any other source/destination overlap, fail before hashing or copying.

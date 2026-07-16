@@ -1100,7 +1100,9 @@ export function createWindowsTaskSchedulerBackend(
               ? `Dry-run: task ${WINDOWS_STARTUP_TASK_NAME} already has the exact current-user definition; no mutation required.`
               : inspection.state === "absent" && inspection.expected
                 ? `Dry-run: would snapshot the Lifeline launcher beneath ${inspection.expected.rootDirectory} and register task ${WINDOWS_STARTUP_TASK_NAME} for current-user logon.`
-                : `Dry-run blocked. ${inspection.detail}`,
+                : inspection.state === "owned-drift" && inspection.expected
+                  ? `Dry-run: would reconcile Lifeline-owned task ${WINDOWS_STARTUP_TASK_NAME} for ${inspection.expected.rootDirectory} to the exact current-v4 definition while preserving the same task identity.`
+                  : `Dry-run blocked. ${inspection.detail}`,
           ...(inspection.state === "conflict" || inspection.state === "error"
             ? { ok: false }
             : {}),
