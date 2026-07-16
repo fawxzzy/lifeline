@@ -18,6 +18,7 @@
 - Added immediate exact-XML ownership guards before forced owned-task replacement, rollback restoration, and deletion so a concurrent foreign or different-root replacement is preserved without mutation.
 - Added a post-snapshot exact task readback so launcher repair cannot report installed from stale pre-repair Scheduler XML.
 - Documented and deterministically verified that pre-v2 name/action-only tasks without a provable root remain foreign conflicts requiring explicit operator inspection and migration.
+- Re-read guarded-down failures so a replacement supervisor that wins inside the conditional state transition is preserved while cleanup stops only the startup invocation's original PID.
 - Added bounded `restore --startup` semantics so enabled logon restoration can revive stopped/restorable apps without changing ordinary restore behavior, while a long-lived task wrapper preserves the supervised process tree until `lifeline down` completes.
 - Completed the supervised Playbook restart and Windows logon-restore roadmap lanes with real manual Task Scheduler execution, stable runtime placement, canonical Observer health, singleton process proof, and clean stopped/task-enabled convergence.
 - WHY: A short-lived scheduled restore action could otherwise lose its child supervisor when Task Scheduler closed the completed action tree, and a worktree-bound launcher or manifest would not survive owner worktree archival.

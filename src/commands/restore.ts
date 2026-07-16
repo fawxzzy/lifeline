@@ -234,6 +234,30 @@ export async function cleanupPartialStartupRestore(
         })
     ).catch(() => 1);
     if (exitCode !== 0) {
+      let postDownState: RuntimeStateFile;
+      try {
+        postDownState = await readRuntimeState();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        cleanupFailures.push(
+          `${restored.name} down exited ${exitCode}; post-down state inspection failed: ${message}`,
+        );
+        continue;
+      }
+      const postDownApp = postDownState.apps[restored.name];
+      if (!postDownApp) {
+        cleanupFailures.push(
+          `${restored.name} down exited ${exitCode}; post-down runtime state is missing`,
+        );
+        continue;
+      }
+      if (postDownApp.supervisorPid !== restored.supervisorPid) {
+        preservedReplacements.set(restored.name, postDownApp.supervisorPid);
+        console.log(
+          `Startup cleanup preserved replacement supervisor ${postDownApp.supervisorPid} for ${restored.name} after guarded down declined the stale identity; stopping only invocation-owned supervisor ${restored.supervisorPid}.`,
+        );
+        continue;
+      }
       cleanupFailures.push(`${restored.name} down exited ${exitCode}`);
     }
   }

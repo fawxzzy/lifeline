@@ -355,6 +355,74 @@ async function verifyRestoreEntrypointWiring() {
     "Startup monitoring must report identity drift while successfully cleaning only the invocation-owned supervisor PID and preserving a newer replacement supervisor and its state.",
   );
 
+  const guardedDownRaceRestore = {
+    name: "replaced-during-guarded-down",
+    supervisorPid: 7300,
+    startedAt: "2026-07-15T12:00:00.000Z",
+  };
+  const guardedDownRaceState = {
+    apps: {
+      "replaced-during-guarded-down": {
+        ...stoppedByDown,
+        name: guardedDownRaceRestore.name,
+        supervisorPid: guardedDownRaceRestore.supervisorPid,
+        childPid: 7301,
+        wrapperPid: 7302,
+        listenerPid: 7301,
+        portOwnerPid: 7301,
+        lastKnownStatus: "crash-loop",
+        lastExitAt: undefined,
+        blockedReason: "fixture failure before replacement",
+        crashLoopDetected: true,
+      },
+    },
+  };
+  const guardedDownRaceAlive = new Set([7300, 7400]);
+  const guardedDownRaceCalls = [];
+  const guardedDownRaceStopCalls = [];
+  const guardedDownRaceFailure = await monitorStartupRestore(
+    [guardedDownRaceRestore],
+    {
+      downApp: async (name) => {
+        guardedDownRaceCalls.push(name);
+        guardedDownRaceState.apps[name] = {
+          ...guardedDownRaceState.apps[name],
+          supervisorPid: 7400,
+          childPid: 7401,
+          wrapperPid: 7402,
+          listenerPid: 7401,
+          portOwnerPid: 7401,
+          lastKnownStatus: "running",
+          blockedReason: undefined,
+          crashLoopDetected: false,
+        };
+        return 1;
+      },
+      processAlive: async (pid) => guardedDownRaceAlive.has(pid),
+      readRuntimeState: async () => guardedDownRaceState,
+      stopSupervisor: async (pid) => {
+        guardedDownRaceStopCalls.push(pid);
+        guardedDownRaceAlive.delete(pid);
+      },
+      wait: async () => undefined,
+    },
+  );
+  assert(
+    guardedDownRaceFailure?.includes("entered crash-loop") &&
+      guardedDownRaceFailure.includes("all supervisors started") &&
+      !guardedDownRaceFailure.includes("cleanup failed") &&
+      JSON.stringify(guardedDownRaceCalls) ===
+        JSON.stringify(["replaced-during-guarded-down"]) &&
+      JSON.stringify(guardedDownRaceStopCalls) === JSON.stringify([7300]) &&
+      !guardedDownRaceAlive.has(7300) &&
+      guardedDownRaceAlive.has(7400) &&
+      guardedDownRaceState.apps["replaced-during-guarded-down"]
+        .supervisorPid === 7400 &&
+      guardedDownRaceState.apps["replaced-during-guarded-down"]
+        .lastKnownStatus === "running",
+    "A replacement that wins after cleanup pre-read but before guarded down writes must be re-read as preserved; only the invocation-owned PID may be stopped and cleanup must succeed without overwriting or stopping the replacement.",
+  );
+
   const earlyFailureRestores = [
     {
       name: "early-failure",
