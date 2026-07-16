@@ -1251,6 +1251,40 @@ async function restorePriorOwnedTaskAfterFailedReadback(
   launcher: LauncherPlan,
   priorXml: string,
 ): Promise<{ verified: boolean; detail: string }> {
+  const preRestoreReadback = await runner([
+    "/Query",
+    "/TN",
+    WINDOWS_STARTUP_TASK_NAME,
+    "/XML",
+  ]);
+  if (preRestoreReadback.code === 0) {
+    if (
+      normalizeTaskXmlForComparison(preRestoreReadback.stdout) ===
+      normalizeTaskXmlForComparison(priorXml)
+    ) {
+      return {
+        verified: true,
+        detail:
+          "The exact prior Lifeline-owned definition was already present and verified before rollback; no forced replacement was performed.",
+      };
+    }
+    return {
+      verified: false,
+      detail:
+        "FAIL-CLOSED BLOCKER: rollback found a different task definition immediately before restoration and preserved it without forced replacement.",
+    };
+  }
+  if (!isTaskMissing(preRestoreReadback)) {
+    return {
+      verified: false,
+      detail: `FAIL-CLOSED BLOCKER: rollback could not verify absence immediately before restoration and performed no forced replacement: ${
+        preRestoreReadback.stderr ||
+        preRestoreReadback.stdout ||
+        "scheduler query did not prove absence"
+      }`,
+    };
+  }
+
   const restorableXml = priorXml.replace(/^\s*<\?xml[^>]*>\s*/i, "");
   const definition = await writeInvocationTaskDefinition(
     launcher,
@@ -1265,15 +1299,31 @@ async function restorePriorOwnedTaskAfterFailedReadback(
       WINDOWS_STARTUP_TASK_NAME,
       "/XML",
       definition.path,
-      "/F",
     ]);
   } finally {
     await removeInvocationTaskDefinition(definition);
   }
   if (restoreResult.code !== 0) {
+    const failedRestoreReadback = await runner([
+      "/Query",
+      "/TN",
+      WINDOWS_STARTUP_TASK_NAME,
+      "/XML",
+    ]);
+    if (
+      failedRestoreReadback.code === 0 &&
+      normalizeTaskXmlForComparison(failedRestoreReadback.stdout) ===
+        normalizeTaskXmlForComparison(priorXml)
+    ) {
+      return {
+        verified: true,
+        detail:
+          "The exact prior Lifeline-owned definition was restored concurrently and verified after this invocation's non-forced create failed.",
+      };
+    }
     return {
       verified: false,
-      detail: `Prior owned definition restoration failed: ${
+      detail: `Prior owned definition non-forced restoration failed and the exact prior XML was not verified: ${
         restoreResult.stderr ||
         restoreResult.stdout ||
         "unknown scheduler restore error"
@@ -1498,6 +1548,40 @@ export function createWindowsTaskSchedulerBackend(
         };
       }
 
+      if (inspection.state === "owned-drift") {
+        const preCreateReadback = await runner([
+          "/Query",
+          "/TN",
+          WINDOWS_STARTUP_TASK_NAME,
+          "/XML",
+        ]);
+        if (
+          preCreateReadback.code === 0 &&
+          matchesExpectedTask(preCreateReadback.stdout, expected)
+        ) {
+          return {
+            status: "installed",
+            detail: `Task ${WINDOWS_STARTUP_TASK_NAME} reached the exact current-v4 definition before forced replacement; enable converged without overwriting the concurrent winner.`,
+          };
+        }
+        if (
+          !inspection.existingXml ||
+          preCreateReadback.code !== 0 ||
+          normalizeTaskXmlForComparison(preCreateReadback.stdout) !==
+            normalizeTaskXmlForComparison(inspection.existingXml)
+        ) {
+          const missing =
+            preCreateReadback.code !== 0 && isTaskMissing(preCreateReadback);
+          return {
+            status: missing ? "not-installed" : "installed",
+            ok: false,
+            detail: `FAIL-CLOSED BLOCKER: task ${WINDOWS_STARTUP_TASK_NAME} changed after owned-drift inspection and immediately before forced replacement; the observed ${
+              missing ? "absence" : "definition"
+            } was preserved without /Create /F.`,
+          };
+        }
+      }
+
       const definition = await writeInvocationTaskDefinition(
         expected.launcher,
         "create",
@@ -1612,6 +1696,31 @@ export function createWindowsTaskSchedulerBackend(
         return {
           status: "not-installed",
           detail: `Task ${WINDOWS_STARTUP_TASK_NAME} is already absent from Windows Task Scheduler.`,
+        };
+      }
+
+      const preDeleteReadback = await runner([
+        "/Query",
+        "/TN",
+        WINDOWS_STARTUP_TASK_NAME,
+        "/XML",
+      ]);
+      if (preDeleteReadback.code !== 0 && isTaskMissing(preDeleteReadback)) {
+        return {
+          status: "not-installed",
+          detail: `Task ${WINDOWS_STARTUP_TASK_NAME} became absent after ownership inspection; absence was verified and no delete was required.`,
+        };
+      }
+      if (
+        !inspection.existingXml ||
+        preDeleteReadback.code !== 0 ||
+        normalizeTaskXmlForComparison(preDeleteReadback.stdout) !==
+          normalizeTaskXmlForComparison(inspection.existingXml)
+      ) {
+        return {
+          status: "installed",
+          ok: false,
+          detail: `FAIL-CLOSED BLOCKER: task ${WINDOWS_STARTUP_TASK_NAME} changed after ownership inspection and immediately before deletion; the observed definition was preserved and startup intent remains enabled.`,
         };
       }
 

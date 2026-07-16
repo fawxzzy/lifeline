@@ -1511,6 +1511,85 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "A Lifeline v2 task with the same root and recognized stable action must upgrade to v4.",
   );
 
+  const foreignReplacementDefinition = firstDefinition.replace(
+    "<Author>Lifeline</Author>",
+    "<Author>Foreign</Author>",
+  );
+  let foreignBeforeForceQueryCount = 0;
+  let foreignBeforeForceCreateCount = 0;
+  const foreignBeforeForceRunner = async (args) => {
+    if (args[0] === "/Query") {
+      foreignBeforeForceQueryCount += 1;
+      return {
+        code: 0,
+        stdout:
+          foreignBeforeForceQueryCount === 1
+            ? v2Definition
+            : foreignReplacementDefinition,
+        stderr: "",
+      };
+    }
+    if (args[0] === "/Create") {
+      foreignBeforeForceCreateCount += 1;
+      throw new Error("Foreign replacement must not be overwritten.");
+    }
+    throw new Error(
+      `Unexpected pre-force foreign fixture call: ${args.join(" ")}`,
+    );
+  };
+  const foreignBeforeForceBackend = createWindowsTaskSchedulerBackend(
+    foreignBeforeForceRunner,
+    options,
+  );
+  const foreignBeforeForceResult =
+    await foreignBeforeForceBackend.install(request);
+  assert(
+    foreignBeforeForceResult.ok === false &&
+      foreignBeforeForceResult.status === "installed" &&
+      foreignBeforeForceResult.detail.includes(
+        "changed after owned-drift inspection",
+      ) &&
+      foreignBeforeForceCreateCount === 0 &&
+      foreignBeforeForceQueryCount === 2,
+    "An owned-drift upgrade must re-read the exact inspected XML immediately before /Create /F and preserve a foreign replacement without mutation.",
+  );
+
+  let exactBeforeForceQueryCount = 0;
+  let exactBeforeForceCreateCount = 0;
+  const exactBeforeForceRunner = async (args) => {
+    if (args[0] === "/Query") {
+      exactBeforeForceQueryCount += 1;
+      return {
+        code: 0,
+        stdout:
+          exactBeforeForceQueryCount === 1 ? v2Definition : firstDefinition,
+        stderr: "",
+      };
+    }
+    if (args[0] === "/Create") {
+      exactBeforeForceCreateCount += 1;
+      throw new Error("Exact concurrent winner must not be overwritten.");
+    }
+    throw new Error(
+      `Unexpected pre-force exact fixture call: ${args.join(" ")}`,
+    );
+  };
+  const exactBeforeForceBackend = createWindowsTaskSchedulerBackend(
+    exactBeforeForceRunner,
+    options,
+  );
+  const exactBeforeForceResult = await exactBeforeForceBackend.install(request);
+  assert(
+    exactBeforeForceResult.ok !== false &&
+      exactBeforeForceResult.status === "installed" &&
+      exactBeforeForceResult.detail.includes(
+        "converged without overwriting the concurrent winner",
+      ) &&
+      exactBeforeForceCreateCount === 0 &&
+      exactBeforeForceQueryCount === 2,
+    "An owned-drift upgrade that reads an exact current-v4 winner immediately before /Create /F must converge without forced replacement.",
+  );
+
   registeredXml = v2Definition.replaceAll(
     "S-1-5-21-111-222-333-1001",
     "ATLAS\\operator",
@@ -1527,6 +1606,81 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   assert(
     v2RemoveResult.status === "not-installed" && registeredXml === "",
     "A Lifeline v2 task with the same root and recognized stable action must remain safely removable.",
+  );
+
+  let foreignBeforeDeleteQueryCount = 0;
+  let foreignBeforeDeleteCount = 0;
+  const foreignBeforeDeleteRunner = async (args) => {
+    if (args[0] === "/Query") {
+      foreignBeforeDeleteQueryCount += 1;
+      return {
+        code: 0,
+        stdout:
+          foreignBeforeDeleteQueryCount === 1
+            ? firstDefinition
+            : foreignReplacementDefinition,
+        stderr: "",
+      };
+    }
+    if (args[0] === "/Delete") {
+      foreignBeforeDeleteCount += 1;
+      throw new Error("Foreign replacement must not be deleted.");
+    }
+    throw new Error(
+      `Unexpected pre-delete foreign fixture call: ${args.join(" ")}`,
+    );
+  };
+  const foreignBeforeDeleteBackend = createWindowsTaskSchedulerBackend(
+    foreignBeforeDeleteRunner,
+    options,
+  );
+  const foreignBeforeDeleteResult =
+    await foreignBeforeDeleteBackend.uninstall(request);
+  assert(
+    foreignBeforeDeleteResult.ok === false &&
+      foreignBeforeDeleteResult.status === "installed" &&
+      foreignBeforeDeleteResult.detail.includes(
+        "changed after ownership inspection",
+      ) &&
+      foreignBeforeDeleteCount === 0 &&
+      foreignBeforeDeleteQueryCount === 2,
+    "Disable must re-read the exact inspected XML immediately before /Delete and preserve a foreign replacement without mutation.",
+  );
+
+  let absentBeforeDeleteQueryCount = 0;
+  let absentBeforeDeleteCount = 0;
+  const absentBeforeDeleteRunner = async (args) => {
+    if (args[0] === "/Query") {
+      absentBeforeDeleteQueryCount += 1;
+      return absentBeforeDeleteQueryCount === 1
+        ? { code: 0, stdout: firstDefinition, stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+    }
+    if (args[0] === "/Delete") {
+      absentBeforeDeleteCount += 1;
+      throw new Error("Already-absent task must not be deleted.");
+    }
+    throw new Error(
+      `Unexpected pre-delete absent fixture call: ${args.join(" ")}`,
+    );
+  };
+  const absentBeforeDeleteBackend = createWindowsTaskSchedulerBackend(
+    absentBeforeDeleteRunner,
+    options,
+  );
+  const absentBeforeDeleteResult =
+    await absentBeforeDeleteBackend.uninstall(request);
+  assert(
+    absentBeforeDeleteResult.ok !== false &&
+      absentBeforeDeleteResult.status === "not-installed" &&
+      absentBeforeDeleteResult.detail.includes("became absent") &&
+      absentBeforeDeleteCount === 0 &&
+      absentBeforeDeleteQueryCount === 2,
+    "Disable must accept verified concurrent absence after ownership inspection without issuing /Delete.",
   );
 
   const differentRoot = path.join(tempRoot, "different-runtime-home");
@@ -1638,7 +1792,7 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       stickyDeleteResult.detail.includes("still present") &&
       stickyDeleteXml === firstDefinition &&
       stickyDeleteInvocations.filter(([command]) => command === "/Query")
-        .length === 2,
+        .length === 3,
     "A successful scheduler delete response must fail closed when exact readback still finds the task.",
   );
 
@@ -1733,6 +1887,12 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       ) &&
       upgradeRollbackXml === v2Definition &&
       upgradeCreateCount === 2 &&
+      upgradeRollbackInvocations
+        .filter(([command]) => command === "/Create")[0]
+        ?.includes("/F") &&
+      !upgradeRollbackInvocations
+        .filter(([command]) => command === "/Create")[1]
+        ?.includes("/F") &&
       new Set(upgradeDefinitionPaths).size === 2 &&
       (
         await Promise.all(
@@ -1745,6 +1905,56 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       ).every((exists) => !exists) &&
       !upgradeRollbackInvocations.some(([command]) => command === "/Delete"),
     "A successful owned-drift scheduler mutation whose readback proves the task missing must restore and verify the exact prior v2 definition through a distinct cleaned invocation-owned XML file without deleting it.",
+  );
+
+  let foreignBeforeRollbackQueryCount = 0;
+  let foreignBeforeRollbackCreateCount = 0;
+  const foreignBeforeRollbackInvocations = [];
+  const foreignBeforeRollbackRunner = async (args) => {
+    foreignBeforeRollbackInvocations.push([...args]);
+    if (args[0] === "/Query") {
+      foreignBeforeRollbackQueryCount += 1;
+      if (foreignBeforeRollbackQueryCount <= 2) {
+        return { code: 0, stdout: v2Definition, stderr: "" };
+      }
+      if (foreignBeforeRollbackQueryCount <= 4) {
+        return {
+          code: 1,
+          stdout: "",
+          stderr: "ERROR: The system cannot find the file specified.",
+        };
+      }
+      return { code: 0, stdout: foreignReplacementDefinition, stderr: "" };
+    }
+    if (args[0] === "/Create") {
+      foreignBeforeRollbackCreateCount += 1;
+      if (foreignBeforeRollbackCreateCount === 1) {
+        return { code: 0, stdout: "SUCCESS", stderr: "" };
+      }
+      throw new Error("Rollback must not overwrite a foreign replacement.");
+    }
+    throw new Error(
+      `Unexpected pre-rollback foreign fixture call: ${args.join(" ")}`,
+    );
+  };
+  const foreignBeforeRollbackBackend = createWindowsTaskSchedulerBackend(
+    foreignBeforeRollbackRunner,
+    options,
+  );
+  const foreignBeforeRollbackResult =
+    await foreignBeforeRollbackBackend.install(request);
+  assert(
+    foreignBeforeRollbackResult.ok === false &&
+      foreignBeforeRollbackResult.status === "installed" &&
+      foreignBeforeRollbackResult.detail.includes(
+        "rollback found a different task definition",
+      ) &&
+      foreignBeforeRollbackCreateCount === 1 &&
+      foreignBeforeRollbackQueryCount === 5 &&
+      !foreignBeforeRollbackInvocations.some(
+        ([command]) => command === "/Delete",
+      ),
+    "Owned-upgrade rollback must re-read immediately before restoration and preserve a foreign replacement without /Create /F.",
   );
 
   let failedAbsentCreateXml = "";
