@@ -2,6 +2,27 @@
 
 ## 2026-07-15
 
+- Hardened Windows logon restore around one current-user Task Scheduler definition with explicit runtime-home arguments, a content-addressed stable launcher snapshot, limited run level, `IgnoreNew`, exact readback, idempotent re-enable, and foreign-task rejection.
+- Added fail-closed startup terminal verification and narrowly versioned same-root ownership recognition so stale-running supervisor loss fails while recognized v2 tasks remain upgradeable and removable.
+- Added byte-for-byte stable-launcher reuse checks plus state-aware registration rollback so corrupt snapshots self-repair and failed owned upgrades restore their exact prior task instead of deleting it.
+- Tightened v4 Windows readback to the structurally exact declared Settings block and exactly one expected action, repairing safe owned drift while rejecting behavioral extras and multi-action definitions.
+- Closed Windows startup transaction and multi-app failure gaps: exact single-trigger/principal ownership, verified create/delete reconciliation, honest retained-task status, partial-launch cleanup, and live hold-state correlation now fail closed with deterministic coverage.
+- Rejected recursive Windows launcher source/destination overlap before snapshotting and deferred identity resolution until Task Scheduler availability is known.
+- Made Windows enable dry-run predict the supported v2/v3 or safe-drift reconciliation path instead of misreporting it as blocked.
+- Bound failed startup cleanup to the exact supervisor PIDs launched by that invocation so a newer replacement supervisor and its persisted state are never stopped or overwritten.
+- Removed the optional `ONE` XML type token from exact-task Scheduler queries, retaining behavior on the proof host while aligning readback with the documented `/XML` flag form across Windows versions.
+- Cleared transient crash-loop/blocked markers after successful PID-owned down while preserving them on failed down, and treated stable-launcher metadata symmetrically as generated non-payload content during hash/copy/compare.
+- Made concurrent Windows startup enables converge end to end: unique verified staging plus a recoverable filesystem lease atomically publishes one byte-valid launcher, and a losing task create accepts the winner's exact v4 definition while non-exact or ambiguous readback is preserved without unproven deletion authority.
+- Rehashed staged launcher payloads against their planned content address and isolated every scheduler create/rollback XML file per invocation so concurrent source or task-definition writes cannot corrupt accepted startup state.
+- Made owned-drift create reconciliation accept an exact concurrent v4 winner while preserving unchanged, foreign, missing, or ambiguous readback without stale rollback; made PID-owned stopped/blocked transitions atomic beneath a cross-process runtime-state mutation lease.
+- Added immediate exact-XML ownership guards before forced owned-task replacement, rollback restoration, and deletion so a concurrent foreign or different-root replacement is preserved without mutation.
+- Added a post-snapshot exact task readback so launcher repair cannot report installed from stale pre-repair Scheduler XML.
+- Documented and deterministically verified that pre-v2 name/action-only tasks without a provable root remain foreign conflicts requiring explicit operator inspection and migration.
+- Re-read guarded-down failures so a replacement supervisor that wins inside the conditional state transition is preserved while cleanup stops only the startup invocation's original PID.
+- Encoded quoted Task Scheduler arguments with Windows backslash rules so drive/UNC roots ending in a separator remain distinct `--root` values.
+- Added bounded `restore --startup` semantics so enabled logon restoration can revive stopped/restorable apps without changing ordinary restore behavior, while a long-lived task wrapper preserves the supervised process tree until `lifeline down` completes.
+- Completed the supervised Playbook restart and Windows logon-restore roadmap lanes with real manual Task Scheduler execution, stable runtime placement, canonical Observer health, singleton process proof, and clean stopped/task-enabled convergence.
+- WHY: A short-lived scheduled restore action could otherwise lose its child supervisor when Task Scheduler closed the completed action tree, and a worktree-bound launcher or manifest would not survive owner worktree archival.
 - Added the explicit Lifeline runtime-home placement contract with global `--root` forms, `LIFELINE_ROOT`, CLI-over-environment-over-cwd precedence, absolute child inheritance, and non-creating `doctor` path reporting.
 - Redirected runtime state, logs, startup state, release state, privileged receipts, and proof receipts beneath `<resolved-home>/.lifeline/` while preserving application working directories, Atlas discovery, and `--receipt-dir` overrides.
 - Added deterministic runtime-home proof and owner-roadmap follow-on lanes for supervised Playbook Observer restart and Windows logon restoration.

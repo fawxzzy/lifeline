@@ -6,17 +6,25 @@ declare namespace NodeJS {
 
 declare module "node:fs/promises" {
   export function readFile(path: string, encoding: string): Promise<string>;
-  export function readFile(path: string): Promise<string>;
+  export function readFile(path: string): Promise<Uint8Array>;
   export function writeFile(
     path: string,
     data: string,
     encoding: string,
   ): Promise<void>;
+  export function copyFile(source: string, destination: string): Promise<void>;
   export function mkdir(
     path: string,
     options?: { recursive?: boolean },
   ): Promise<void>;
+  export function mkdtemp(prefix: string): Promise<string>;
+  export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function rm(
+    path: string,
+    options?: { recursive?: boolean; force?: boolean },
+  ): Promise<void>;
   export function access(path: string): Promise<void>;
+  export function unlink(path: string): Promise<void>;
   export function open(
     path: string,
     flags: string,
@@ -41,9 +49,14 @@ declare module "node:fs/promises" {
   export function readlink(path: string): Promise<string>;
   export function stat(path: string): Promise<{
     size: number;
+    mtimeMs: number;
     isDirectory(): boolean;
     isFile(): boolean;
   }>;
+}
+
+declare module "node:url" {
+  export function fileURLToPath(url: URL): string;
 }
 
 declare module "node:fs" {
@@ -70,17 +83,13 @@ declare module "node:path" {
 }
 
 declare module "node:crypto" {
-  export function createHash(algorithm: string): {
-    update(
-      data: string,
-      inputEncoding?: string,
-    ): {
-      digest(encoding: "hex"): string;
-    };
-    update(data: Uint8Array): {
-      digest(encoding: "hex"): string;
-    };
-  };
+  interface Hash {
+    update(data: string, inputEncoding?: string): Hash;
+    update(data: Uint8Array): Hash;
+    digest(encoding: "hex"): string;
+  }
+
+  export function createHash(algorithm: string): Hash;
 }
 
 declare module "node:os" {

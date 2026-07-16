@@ -18,7 +18,7 @@ import { runSupervisor } from "./core/supervisor.js";
 
 function printUsage(): void {
   console.log(
-    "Lifeline v1 + Wave 2 startup and execution contracts\n\nGlobal runtime-home option:\n  --root <path> | --root=<path>  (overrides LIFELINE_ROOT and defaults to the invoking cwd)\n\nUsage:\n  lifeline [--root <path>] doctor\n  lifeline [--root <path>] validate <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] resolve <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] up <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] down <app-name>\n  lifeline [--root <path>] status <app-name> [--proof|--proof-text] [--proof-gate]\n  lifeline [--root <path>] logs <app-name> [line-count]\n  lifeline [--root <path>] restart <app-name> [--playbook-path <path>]\n  lifeline [--root <path>] restore\n  lifeline [--root <path>] startup <enable|disable|status> [--dry-run]\n  lifeline [--root <path>] release <plan|persist> <deploy-manifest>\n  lifeline [--root <path>] release activate <app-name> <release-id> [--yes|--confirm]\n  lifeline [--root <path>] release rollback <app-name> [--yes|--confirm]\n  lifeline [--root <path>] execute <request-path> --capability-profile <path> --approval-receipt <path> [--receipt-dir <path>]\n  lifeline [--root <path>] proof-pass <proof-summary-path> --source-repo <id> --tranche <id> [--receipt-dir <path>]",
+    "Lifeline v1 + Wave 2 startup and execution contracts\n\nGlobal runtime-home option:\n  --root <path> | --root=<path>  (overrides LIFELINE_ROOT and defaults to the invoking cwd)\n\nUsage:\n  lifeline [--root <path>] doctor\n  lifeline [--root <path>] validate <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] resolve <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] up <manifest-path> [--playbook-path <path>]\n  lifeline [--root <path>] down <app-name>\n  lifeline [--root <path>] status <app-name> [--proof|--proof-text] [--proof-gate]\n  lifeline [--root <path>] logs <app-name> [line-count]\n  lifeline [--root <path>] restart <app-name> [--playbook-path <path>]\n  lifeline [--root <path>] restore [--startup]\n  lifeline [--root <path>] startup <enable|disable|status> [--dry-run]\n  lifeline [--root <path>] release <plan|persist> <deploy-manifest>\n  lifeline [--root <path>] release activate <app-name> <release-id> [--yes|--confirm]\n  lifeline [--root <path>] release rollback <app-name> [--yes|--confirm]\n  lifeline [--root <path>] execute <request-path> --capability-profile <path> --approval-receipt <path> [--receipt-dir <path>]\n  lifeline [--root <path>] proof-pass <proof-summary-path> --source-repo <id> --tranche <id> [--receipt-dir <path>]",
   );
 }
 
@@ -158,7 +158,17 @@ async function main(argv: string[]): Promise<number> {
       }
       return runRestartCommand(target, playbookPath);
     case "restore":
-      return runRestoreCommand();
+      if (
+        (target && target !== "--startup") ||
+        option ||
+        playbookPath ||
+        statusProofMode ||
+        enforceProofGate
+      ) {
+        console.error("The restore command accepts only the optional --startup mode.");
+        return 1;
+      }
+      return runRestoreCommand({ startup: target === "--startup" });
     case "startup":
       return runStartupCommand(target, option);
     case "release":

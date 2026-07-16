@@ -55,6 +55,10 @@ export async function runStartupCommand(
 
     const mutationRequest = createStartupMutationRequest();
     const backendResult = await backend.install(mutationRequest);
+    if (backendResult.ok === false) {
+      console.error(backendResult.detail);
+      return 1;
+    }
     await setStartupIntent("enabled", backendResult.status);
     console.log("Startup intent enabled.");
     console.log(backendResult.detail);
@@ -75,6 +79,10 @@ export async function runStartupCommand(
 
     const mutationRequest = createStartupMutationRequest();
     const backendResult = await backend.uninstall(mutationRequest);
+    if (backendResult.ok === false) {
+      console.error(backendResult.detail);
+      return 1;
+    }
     await setStartupIntent("disabled", backendResult.status);
     console.log("Startup intent disabled.");
     console.log(backendResult.detail);

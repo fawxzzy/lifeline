@@ -234,6 +234,46 @@ export async function startDetachedCommand(options: {
   });
 }
 
+export async function startDetachedExecutable(options: {
+  executable: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  label: string;
+}): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const child = spawn(options.executable, options.args, {
+      cwd: options.cwd,
+      env: options.env,
+      shell: false,
+      detached: !isWindows(),
+      stdio: "ignore",
+      windowsHide: true,
+    });
+
+    child.on("error", (error) => {
+      reject(
+        new ProcessManagerError(
+          `Failed to start ${options.label}: ${error.message}`,
+        ),
+      );
+    });
+
+    child.on("spawn", () => {
+      child.unref();
+      if (!child.pid) {
+        reject(
+          new ProcessManagerError(
+            `Failed to start ${options.label}: missing pid.`,
+          ),
+        );
+        return;
+      }
+      resolve(child.pid);
+    });
+  });
+}
+
 export async function isProcessAlive(pid: number): Promise<boolean> {
   try {
     process.kill(pid, 0);

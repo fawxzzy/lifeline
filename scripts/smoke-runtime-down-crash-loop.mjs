@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,14 +9,16 @@ import { ensureBuilt } from "./lib/ensure-built.mjs";
 await ensureBuilt();
 
 const cli = ["node", "dist/cli.js"];
-const statePath = ".lifeline/state.json";
-
+const originalRuntimeRoot = process.env.LIFELINE_ROOT;
+const ownedRuntimeRoot = originalRuntimeRoot
+  ? undefined
+  : await mkdtemp(path.join(tmpdir(), "lifeline-down-crash-loop-state-"));
+if (ownedRuntimeRoot) {
+  process.env.LIFELINE_ROOT = ownedRuntimeRoot;
+}
+const runtimeRoot = path.resolve(process.env.LIFELINE_ROOT ?? process.cwd());
 const uniqueSuffix = `${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 const appName = `runtime-smoke-down-crash-loop-${uniqueSuffix}`;
-const runtimePort = 7600 + Math.floor(Math.random() * 1000);
-
-let manifestPath = "fixtures/runtime-smoke-app/runtime-smoke-app.lifeline.yml";
-let tempRootDir;
 
 function run(args, { allowFailure = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -44,139 +46,131 @@ function run(args, { allowFailure = false } = {}) {
         );
         return;
       }
-
       resolve({ code, stdout, stderr });
     });
   });
 }
 
-function canBindPort(port) {
-  return new Promise((resolve) => {
+function reserveUnusedPort() {
+  return new Promise((resolve, reject) => {
     const server = net.createServer();
-    server.once("error", () => resolve(false));
-    server.listen(port, "127.0.0.1", () => {
-      server.close(() => resolve(true));
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Could not reserve a deterministic unused port."));
+        return;
+      }
+      server.close(() => resolve(address.port));
     });
   });
 }
 
-async function readRuntimeState() {
-  const raw = await readFile(statePath, "utf8").catch(() => "");
-  if (!raw) {
-    return undefined;
+function waitForExit(child, timeoutMs = 5_000) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
   }
-
-  const parsed = JSON.parse(raw);
-  return parsed?.apps?.[appName];
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () =>
+        reject(new Error(`Timed out waiting for pid ${child.pid} to exit.`)),
+      timeoutMs,
+    );
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
 }
 
-async function waitForCrashLoopState() {
-  for (let i = 0; i < 700; i += 1) {
-    const state = await readRuntimeState();
-    if (state?.lastKnownStatus === "crash-loop" && state.crashLoopDetected) {
-      return state;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-
-  const latestStatus = await run(["status", appName], { allowFailure: true });
-  throw new Error(
-    `Timed out waiting for crash-loop state.\nstatus:\n${latestStatus.stdout}\n${latestStatus.stderr}`,
-  );
-}
-
-async function prepareFixtureConfig() {
-  tempRootDir = await mkdtemp(path.join(tmpdir(), "lifeline-runtime-down-crash-loop-smoke-"));
-  const tempFixtureDir = path.join(tempRootDir, "runtime-smoke-app");
-
-  await cp("fixtures/runtime-smoke-app", tempFixtureDir, { recursive: true });
-
-  const envPath = path.join(tempFixtureDir, ".env.runtime");
-  const envRaw = await readFile(envPath, "utf8");
-  await writeFile(envPath, envRaw.replace(/^PORT=.*$/m, `PORT=${runtimePort}`), "utf8");
-
-  const tempManifestPath = path.join(tempFixtureDir, "runtime-smoke-app.lifeline.yml");
-  const manifestRaw = await readFile(tempManifestPath, "utf8");
-  const manifestForCrashLoopDown = manifestRaw
-    .replace(/^name: .*$/m, `name: ${appName}`)
-    .replace(/^port: .*$/m, `port: ${runtimePort}`)
-    .replace(
-      /^startCommand: .*$/m,
-      "startCommand: node -e \"const s=require('node:net').createServer();s.listen(Number(process.env.PORT||0),'127.0.0.1',()=>setTimeout(()=>process.exit(17),100));\"",
-    )
-    .replace(/^  restartPolicy: .*$/m, "  restartPolicy: on-failure");
-
-  await writeFile(tempManifestPath, manifestForCrashLoopDown, "utf8");
-  manifestPath = tempManifestPath;
-}
-
-async function cleanup() {
-  await run(["down", appName], { allowFailure: true });
-}
+const stateStore = await import(
+  new URL("../dist/core/state-store.js", import.meta.url)
+);
+const { getAppState, removeAppState, upsertAppState } = stateStore;
+const supervisor = spawn(
+  process.execPath,
+  ["--eval", "setInterval(() => undefined, 1000)"],
+  { stdio: "ignore", windowsHide: true },
+);
 
 try {
-  await prepareFixtureConfig();
-  await cleanup();
-
-  await run(["up", manifestPath], { allowFailure: true });
-
-  const crashLoopState = await waitForCrashLoopState();
-  if (crashLoopState.lastKnownStatus !== "crash-loop") {
-    throw new Error(`Expected crash-loop runtime state before down, found ${JSON.stringify(crashLoopState)}`);
+  if (!supervisor.pid) {
+    throw new Error("Expected a deterministic supervisor fixture pid.");
   }
+  const runtimePort = await reserveUnusedPort();
+  const supervisorPid = supervisor.pid;
+  await upsertAppState({
+    name: appName,
+    manifestPath: path.join(runtimeRoot, "fixtures", `${appName}.yml`),
+    playbookPath: undefined,
+    workingDirectory: runtimeRoot,
+    supervisorPid,
+    childPid: undefined,
+    wrapperPid: undefined,
+    listenerPid: undefined,
+    portOwnerPid: undefined,
+    port: runtimePort,
+    healthcheckPath: "/healthz",
+    logPath: path.join(runtimeRoot, ".lifeline", "logs", `${appName}.log`),
+    startedAt: new Date().toISOString(),
+    lastKnownStatus: "crash-loop",
+    restartPolicy: "on-failure",
+    restartCount: 5,
+    lastExitCode: 17,
+    lastExitAt: new Date().toISOString(),
+    restorable: true,
+    crashLoopDetected: true,
+    blockedReason: "restart threshold exceeded",
+  });
 
   const downResult = await run(["down", appName], { allowFailure: true });
   if (downResult.code !== 0) {
     throw new Error(
-      `Expected down to succeed for crash-loop app.\nstdout:\n${downResult.stdout}\nstderr:\n${downResult.stderr}`,
+      `Expected down to succeed for same-PID crash-loop state.\nstdout:\n${downResult.stdout}\nstderr:\n${downResult.stderr}`,
     );
   }
+  await waitForExit(supervisor);
 
-  if (downResult.stderr.includes(`No runtime state found for app ${appName}.`)) {
+  const persistedAfterDown = await getAppState(appName);
+  if (
+    persistedAfterDown?.supervisorPid !== supervisorPid ||
+    persistedAfterDown.lastKnownStatus !== "stopped" ||
+    persistedAfterDown.crashLoopDetected !== false ||
+    persistedAfterDown.blockedReason !== undefined
+  ) {
     throw new Error(
-      `Expected down not to take no-history path for crash-loop app.\nstdout:\n${downResult.stdout}\nstderr:\n${downResult.stderr}`,
+      `Expected successful same-PID down to retain identity and clear transient crash-loop markers, found ${JSON.stringify(persistedAfterDown)}.`,
     );
   }
-
-  if (!(await canBindPort(runtimePort))) {
-    throw new Error(`Expected port ${runtimePort} to be free after crash-loop down`);
-  }
-
-  const persistedAfterDown = await readRuntimeState();
-  if (!persistedAfterDown) {
-    throw new Error("Expected persisted runtime state after down for crash-loop history");
-  }
-
-  if (persistedAfterDown.lastKnownStatus !== "stopped") {
+  if (
+    persistedAfterDown.restartCount !== 5 ||
+    persistedAfterDown.lastExitCode !== 17
+  ) {
     throw new Error(
-      `Expected down to converge crash-loop history to stopped, found ${persistedAfterDown.lastKnownStatus}`,
+      "Expected successful same-PID down to preserve restart and exit history.",
     );
   }
 
-  if (persistedAfterDown.crashLoopDetected !== true) {
-    throw new Error(
-      `Expected crash-loop marker to remain persisted for post-down history, found ${persistedAfterDown.crashLoopDetected}`,
-    );
-  }
-
-  if (persistedAfterDown.portOwnerPid) {
-    throw new Error(
-      `Expected persisted state after down to clear portOwnerPid, found ${persistedAfterDown.portOwnerPid}`,
-    );
-  }
-
-  const statusAfterDown = await run(["status", appName], { allowFailure: true });
+  const statusAfterDown = await run(["status", appName], {
+    allowFailure: true,
+  });
   if (!statusAfterDown.stdout.includes(`App ${appName} is stopped.`)) {
     throw new Error(
-      `Expected status after down to report stopped for crash-loop cleanup path.\nstdout:\n${statusAfterDown.stdout}\nstderr:\n${statusAfterDown.stderr}`,
+      `Expected status after down to report stopped for crash-loop cleanup.\nstdout:\n${statusAfterDown.stdout}\nstderr:\n${statusAfterDown.stderr}`,
     );
   }
-} catch (error) {
-  await cleanup();
-  throw error;
+
+  console.log(
+    "Same-PID crash-loop down marker cleanup deterministic verification passed.",
+  );
 } finally {
-  await cleanup();
-  if (tempRootDir) {
-    await rm(tempRootDir, { recursive: true, force: true });
+  if (supervisor.exitCode === null && supervisor.signalCode === null) {
+    supervisor.kill("SIGTERM");
+    await waitForExit(supervisor).catch(() => undefined);
+  }
+  await removeAppState(appName).catch(() => undefined);
+  if (ownedRuntimeRoot) {
+    await rm(ownedRuntimeRoot, { recursive: true, force: true });
   }
 }
