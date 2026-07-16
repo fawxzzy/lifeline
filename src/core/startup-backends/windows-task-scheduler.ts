@@ -78,7 +78,7 @@ type DetailedTaskState =
 interface DetailedTaskInspection {
   state: DetailedTaskState;
   detail: string;
-  expected: ExpectedTaskDefinition;
+  expected?: ExpectedTaskDefinition;
   existingXml?: string;
 }
 
@@ -537,11 +537,27 @@ async function launcherSnapshotMatches(
   return true;
 }
 
+function isSameOrDescendantPath(candidate: string, parent: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith("../") &&
+      !relative.startsWith("..\\") &&
+      !path.isAbsolute(relative))
+  );
+}
+
 async function buildLauncherPlan(
   rootDirectory: string,
   cliEntrypoint: string,
 ): Promise<LauncherPlan> {
   const sourceDirectory = path.dirname(cliEntrypoint);
+  if (isSameOrDescendantPath(rootDirectory, sourceDirectory)) {
+    throw new Error(
+      `Windows startup root ${rootDirectory} must not be the launcher source directory ${sourceDirectory} or one of its descendants.`,
+    );
+  }
   const sourceHash = await hashDirectory(sourceDirectory);
   const startupDirectory = path.join(
     rootDirectory,
@@ -553,6 +569,14 @@ async function buildLauncherPlan(
     startupDirectory,
     `launcher-${sourceHash.slice(0, 16)}`,
   );
+  if (
+    isSameOrDescendantPath(launcherDirectory, sourceDirectory) ||
+    isSameOrDescendantPath(sourceDirectory, launcherDirectory)
+  ) {
+    throw new Error(
+      `Windows startup launcher destination ${launcherDirectory} must not overlap launcher source ${sourceDirectory}.`,
+    );
+  }
   return {
     sourceDirectory,
     sourceHash,
@@ -751,7 +775,6 @@ async function inspectTaskDetailed(
   runner: WindowsSchedulerRunner,
   options: WindowsTaskSchedulerOptions,
 ): Promise<DetailedTaskInspection> {
-  const expected = await buildExpectedTaskDefinition(options);
   const queryResult = await runner([
     "/Query",
     "/TN",
@@ -763,28 +786,37 @@ async function inspectTaskDetailed(
   if (queryResult.code === -1) {
     return {
       state: "unsupported",
-      expected,
       detail:
         "Windows Task Scheduler CLI is unavailable, so startup registration cannot be inspected.",
     };
   }
 
+  if (queryResult.code !== 0 && !isTaskMissing(queryResult)) {
+    return {
+      state: "error",
+      detail: `Could not inspect task ${WINDOWS_STARTUP_TASK_NAME}: ${
+        queryResult.stderr || queryResult.stdout || "unknown scheduler error"
+      }`,
+    };
+  }
+
+  let expected: ExpectedTaskDefinition;
+  try {
+    expected = await buildExpectedTaskDefinition(options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      state: "error",
+      detail: `Could not build the Windows startup definition: ${message}`,
+    };
+  }
+
   if (queryResult.code !== 0) {
-    return isTaskMissing(queryResult)
-      ? {
-          state: "absent",
-          expected,
-          detail: `Task ${WINDOWS_STARTUP_TASK_NAME} is not currently registered in Windows Task Scheduler.`,
-        }
-      : {
-          state: "error",
-          expected,
-          detail: `Could not inspect task ${WINDOWS_STARTUP_TASK_NAME}: ${
-            queryResult.stderr ||
-            queryResult.stdout ||
-            "unknown scheduler error"
-          }`,
-        };
+    return {
+      state: "absent",
+      expected,
+      detail: `Task ${WINDOWS_STARTUP_TASK_NAME} is not currently registered in Windows Task Scheduler.`,
+    };
   }
 
   if (matchesExpectedTask(queryResult.stdout, expected)) {
@@ -956,6 +988,15 @@ async function reconcileFailedTaskCreation(
   status: "installed" | "not-installed";
   detail: string;
 }> {
+  const expected = inspection.expected;
+  if (!expected) {
+    return {
+      verified: false,
+      status: "installed",
+      detail:
+        "FAIL-CLOSED BLOCKER: expected task identity was unavailable during create reconciliation.",
+    };
+  }
   const readback = await runner([
     "/Query",
     "/TN",
@@ -979,7 +1020,7 @@ async function reconcileFailedTaskCreation(
     }
     const restoration = await restorePriorOwnedTaskAfterFailedReadback(
       runner,
-      inspection.expected.launcher,
+      expected.launcher,
       inspection.existingXml,
     );
     return {
@@ -1000,8 +1041,8 @@ async function reconcileFailedTaskCreation(
   }
   if (
     readback.code === 0 &&
-    (matchesExpectedTask(readback.stdout, inspection.expected) ||
-      isLifelineOwnedTask(readback.stdout, inspection.expected))
+    (matchesExpectedTask(readback.stdout, expected) ||
+      isLifelineOwnedTask(readback.stdout, expected))
   ) {
     const removal = await removeNewlyCreatedTaskAfterFailedReadback(runner);
     return {
@@ -1057,7 +1098,7 @@ export function createWindowsTaskSchedulerBackend(
           detail:
             inspection.state === "installed"
               ? `Dry-run: task ${WINDOWS_STARTUP_TASK_NAME} already has the exact current-user definition; no mutation required.`
-              : inspection.state === "absent"
+              : inspection.state === "absent" && inspection.expected
                 ? `Dry-run: would snapshot the Lifeline launcher beneath ${inspection.expected.rootDirectory} and register task ${WINDOWS_STARTUP_TASK_NAME} for current-user logon.`
                 : `Dry-run blocked. ${inspection.detail}`,
           ...(inspection.state === "conflict" || inspection.state === "error"
@@ -1076,8 +1117,17 @@ export function createWindowsTaskSchedulerBackend(
           ok: false,
         };
       }
+      const expected = inspection.expected;
+      if (!expected) {
+        return {
+          status: "not-installed",
+          detail:
+            "Could not build the expected Windows startup task definition.",
+          ok: false,
+        };
+      }
 
-      await ensureLauncherSnapshot(inspection.expected.launcher);
+      await ensureLauncherSnapshot(expected.launcher);
       if (inspection.state === "installed") {
         return {
           status: "installed",
@@ -1085,15 +1135,12 @@ export function createWindowsTaskSchedulerBackend(
         };
       }
 
-      await mkdir(
-        path.dirname(inspection.expected.launcher.taskDefinitionPath),
-        {
-          recursive: true,
-        },
-      );
+      await mkdir(path.dirname(expected.launcher.taskDefinitionPath), {
+        recursive: true,
+      });
       await writeFile(
-        inspection.expected.launcher.taskDefinitionPath,
-        inspection.expected.xml,
+        expected.launcher.taskDefinitionPath,
+        expected.xml,
         "utf8",
       );
 
@@ -1102,7 +1149,7 @@ export function createWindowsTaskSchedulerBackend(
         "/TN",
         WINDOWS_STARTUP_TASK_NAME,
         "/XML",
-        inspection.expected.launcher.taskDefinitionPath,
+        expected.launcher.taskDefinitionPath,
         ...(inspection.state === "owned-drift" ? ["/F"] : []),
       ];
       const createResult = await runner(createArgs);
@@ -1127,7 +1174,7 @@ export function createWindowsTaskSchedulerBackend(
       }
 
       const readback = await inspectTaskDetailed(runner, options);
-      if (readback.state !== "installed") {
+      if (readback.state !== "installed" || !readback.expected) {
         const rollback = await reconcileFailedTaskCreation(runner, inspection);
         return {
           status: rollback.status,

@@ -743,6 +743,48 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     dryRun: false,
   };
 
+  const unavailableBackend = createWindowsTaskSchedulerBackend(
+    async () => ({
+      code: -1,
+      stdout: "",
+      stderr: "fixture scheduler executable unavailable",
+    }),
+    {
+      rootDirectory: sourceDirectory,
+      cliEntrypoint: path.join(sourceDirectory, "missing-cli.js"),
+    },
+  );
+  const unavailableInspection = await unavailableBackend.inspect();
+  const unavailableInstall = await unavailableBackend.install(request);
+  assert(
+    unavailableInspection.status === "unsupported" &&
+      unavailableInstall.status === "unsupported" &&
+      unavailableInstall.ok === false,
+    "An unavailable scheduler runner must report unsupported before resolving whoami or launcher paths.",
+  );
+
+  const rootEqualsSource = await createWindowsTaskSchedulerBackend(runner, {
+    ...options,
+    rootDirectory: sourceDirectory,
+  }).install(request);
+  const rootUnderSource = await createWindowsTaskSchedulerBackend(runner, {
+    ...options,
+    rootDirectory: path.join(sourceDirectory, "nested-runtime"),
+  }).install(request);
+  assert(
+    rootEqualsSource.ok === false &&
+      rootUnderSource.ok === false &&
+      rootEqualsSource.detail.includes("must not be the launcher source") &&
+      rootUnderSource.detail.includes("must not be the launcher source") &&
+      !(await access(path.join(sourceDirectory, ".lifeline"))
+        .then(() => true)
+        .catch(() => false)) &&
+      !(await access(path.join(sourceDirectory, "nested-runtime"))
+        .then(() => true)
+        .catch(() => false)),
+    "Runtime roots equal to or beneath the CLI dist source must fail before hashing or recursive launcher copy.",
+  );
+
   const dryRun = await backend.install({ ...request, dryRun: true });
   assert(
     dryRun.status === "not-installed" && dryRun.ok !== false,

@@ -1,4 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createWindowsTaskSchedulerBackend } from "../dist/core/startup-backends/windows-task-scheduler.js";
 
 function assert(condition, message) {
@@ -43,7 +46,18 @@ function createSchedulerHarness() {
 }
 
 async function main() {
-  const backend = createWindowsTaskSchedulerBackend(createSchedulerHarness());
+  const runtimeRoot = await mkdtemp(
+    path.join(os.tmpdir(), "lifeline-windows-scheduler-harness-"),
+  );
+  const backend = createWindowsTaskSchedulerBackend(createSchedulerHarness(), {
+    rootDirectory: runtimeRoot,
+    cliEntrypoint: fileURLToPath(new URL("../dist/cli.js", import.meta.url)),
+    nodeExecutable: process.execPath,
+    identity: {
+      account: "ATLAS\\operator",
+      sid: "S-1-5-21-111-222-333-1001",
+    },
+  });
 
   const initialStatus = await backend.inspect();
   assert(
