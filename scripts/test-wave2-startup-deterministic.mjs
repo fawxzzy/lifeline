@@ -1326,6 +1326,43 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "Repeated enable must byte-verify and repair a corrupted launcher snapshot without changing the exact task definition.",
   );
 
+  await writeFile(
+    launcherSupportPath,
+    "export const fixture = false;\n",
+    "utf8",
+  );
+  const repairWindowForeignDefinition = firstDefinition.replace(
+    "<Author>Lifeline</Author>",
+    "<Author>Foreign</Author>",
+  );
+  let repairWindowHookCalls = 0;
+  const createsBeforeRepairWindow = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const repairWindowBackend = createWindowsTaskSchedulerBackend(runner, {
+    ...options,
+    beforeLauncherSnapshotCopy: async () => {
+      repairWindowHookCalls += 1;
+      registeredXml = repairWindowForeignDefinition;
+    },
+  });
+  const repairWindowResult = await repairWindowBackend.install(request);
+  assert(
+    repairWindowResult.ok === false &&
+      repairWindowResult.status === "installed" &&
+      repairWindowResult.detail.includes(
+        "changed after exact inspection and launcher snapshot verification",
+      ) &&
+      repairWindowHookCalls === 1 &&
+      registeredXml === repairWindowForeignDefinition &&
+      (await readFile(launcherSupportPath, "utf8")) ===
+        (await readFile(path.join(sourceDirectory, "support.js"), "utf8")) &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeRepairWindow,
+    "An exact installed task replaced during launcher repair must fail the post-snapshot readback without overwriting the replacement or reporting installed success.",
+  );
+  registeredXml = firstDefinition;
+
   registeredXml = registeredXml.replace(
     "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
     "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>",

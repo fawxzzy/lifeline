@@ -1542,6 +1542,27 @@ export function createWindowsTaskSchedulerBackend(
 
       await ensureLauncherSnapshot(expected.launcher);
       if (inspection.state === "installed") {
+        const postSnapshotReadback = await runner([
+          "/Query",
+          "/TN",
+          WINDOWS_STARTUP_TASK_NAME,
+          "/XML",
+        ]);
+        if (
+          postSnapshotReadback.code !== 0 ||
+          !matchesExpectedTask(postSnapshotReadback.stdout, expected)
+        ) {
+          const missing =
+            postSnapshotReadback.code !== 0 &&
+            isTaskMissing(postSnapshotReadback);
+          return {
+            status: missing ? "not-installed" : "installed",
+            ok: false,
+            detail: `FAIL-CLOSED BLOCKER: task ${WINDOWS_STARTUP_TASK_NAME} changed after exact inspection and launcher snapshot verification; the observed ${
+              missing ? "absence" : "definition"
+            } was preserved and enabled intent was not advanced.`,
+          };
+        }
         return {
           status: "installed",
           detail: `Task ${WINDOWS_STARTUP_TASK_NAME} already has the exact current-user definition; no scheduler mutation was required.`,
