@@ -68,7 +68,7 @@ function reserveUnusedPort() {
 }
 
 function waitForExit(child, timeoutMs = 5_000) {
-  if (child.exitCode !== null) {
+  if (child.exitCode !== null || child.signalCode !== null) {
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
@@ -165,7 +165,7 @@ try {
     "Same-PID crash-loop down marker cleanup deterministic verification passed.",
   );
 } finally {
-  if (supervisor.exitCode === null) {
+  if (supervisor.exitCode === null && supervisor.signalCode === null) {
     supervisor.kill("SIGTERM");
     await waitForExit(supervisor).catch(() => undefined);
   }
