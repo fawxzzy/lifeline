@@ -447,11 +447,18 @@ async function listFilesRecursively(directory: string): Promise<string[]> {
   return files.sort((left, right) => left.localeCompare(right));
 }
 
+function isLauncherMetadataFile(relativePath: string): boolean {
+  return relativePath.replaceAll("\\", "/") === "launcher.json";
+}
+
 async function hashDirectory(directory: string): Promise<string> {
   const hash = createHash("sha256");
   const files = await listFilesRecursively(directory);
   for (const file of files) {
     const relativePath = path.relative(directory, file).replaceAll("\\", "/");
+    if (isLauncherMetadataFile(relativePath)) {
+      continue;
+    }
     hash.update(relativePath, "utf8");
     hash.update("\0", "utf8");
     hash.update(await readFile(file, "utf8"), "utf8");
@@ -460,28 +467,29 @@ async function hashDirectory(directory: string): Promise<string> {
   return hash.digest("hex");
 }
 
-async function copyDirectory(
-  source: string,
-  destination: string,
-): Promise<void> {
-  await mkdir(destination, { recursive: true });
-  const entries = await readdir(source, { withFileTypes: true });
-  for (const entry of entries) {
-    const name = typeof entry === "string" ? entry : entry.name;
-    const sourcePath = path.join(source, name);
-    const destinationPath = path.join(destination, name);
-    if (typeof entry !== "string" && entry.isDirectory()) {
-      await copyDirectory(sourcePath, destinationPath);
-    } else {
-      await copyFile(sourcePath, destinationPath);
-    }
-  }
-}
-
 async function listRelativeFiles(directory: string): Promise<string[]> {
   return (await listFilesRecursively(directory)).map((file) =>
     path.relative(directory, file).replaceAll("\\", "/"),
   );
+}
+
+async function listLauncherPayloadFiles(directory: string): Promise<string[]> {
+  return (await listRelativeFiles(directory)).filter(
+    (file) => !isLauncherMetadataFile(file),
+  );
+}
+
+async function copyLauncherPayload(
+  source: string,
+  destination: string,
+): Promise<void> {
+  await mkdir(destination, { recursive: true });
+  for (const relativeFile of await listLauncherPayloadFiles(source)) {
+    const sourcePath = path.join(source, relativeFile);
+    const destinationPath = path.join(destination, relativeFile);
+    await mkdir(path.dirname(destinationPath), { recursive: true });
+    await copyFile(sourcePath, destinationPath);
+  }
 }
 
 async function filesHaveSameBytes(
@@ -516,10 +524,10 @@ async function launcherSnapshotMatches(
     return false;
   }
 
-  const sourceFiles = await listRelativeFiles(launcher.sourceDirectory);
-  const launcherFiles = (
-    await listRelativeFiles(launcher.launcherDirectory).catch(() => [])
-  ).filter((file) => file !== "launcher.json");
+  const sourceFiles = await listLauncherPayloadFiles(launcher.sourceDirectory);
+  const launcherFiles = await listLauncherPayloadFiles(
+    launcher.launcherDirectory,
+  ).catch(() => []);
   if (JSON.stringify(sourceFiles) !== JSON.stringify(launcherFiles)) {
     return false;
   }
@@ -559,6 +567,19 @@ async function buildLauncherPlan(
     );
   }
   const sourceHash = await hashDirectory(sourceDirectory);
+  const sourceMetadata = await readFile(
+    path.join(sourceDirectory, "launcher.json"),
+    "utf8",
+  ).catch(() => "");
+  if (
+    sourceMetadata &&
+    sourceMetadata !==
+      `${JSON.stringify({ version: 1, sourceHash }, null, 2)}\n`
+  ) {
+    throw new Error(
+      `Windows startup launcher source metadata does not match payload bytes at ${sourceDirectory}.`,
+    );
+  }
   const startupDirectory = path.join(
     rootDirectory,
     ".lifeline",
@@ -569,9 +590,12 @@ async function buildLauncherPlan(
     startupDirectory,
     `launcher-${sourceHash.slice(0, 16)}`,
   );
+  const sourceIsLauncherDirectory =
+    path.relative(sourceDirectory, launcherDirectory) === "";
   if (
-    isSameOrDescendantPath(launcherDirectory, sourceDirectory) ||
-    isSameOrDescendantPath(sourceDirectory, launcherDirectory)
+    !sourceIsLauncherDirectory &&
+    (isSameOrDescendantPath(launcherDirectory, sourceDirectory) ||
+      isSameOrDescendantPath(sourceDirectory, launcherDirectory))
   ) {
     throw new Error(
       `Windows startup launcher destination ${launcherDirectory} must not overlap launcher source ${sourceDirectory}.`,
@@ -856,9 +880,20 @@ async function ensureLauncherSnapshot(launcher: LauncherPlan): Promise<void> {
     return;
   }
 
-  await copyDirectory(launcher.sourceDirectory, launcher.launcherDirectory);
+  if (
+    path.relative(launcher.sourceDirectory, launcher.launcherDirectory) === ""
+  ) {
+    throw new Error(
+      `Stable launcher snapshot verification failed at active source ${launcher.sourceDirectory}; in-place repair is not allowed.`,
+    );
+  }
+
+  await copyLauncherPayload(
+    launcher.sourceDirectory,
+    launcher.launcherDirectory,
+  );
   const sourceFileSet = new Set(
-    await listRelativeFiles(launcher.sourceDirectory),
+    await listLauncherPayloadFiles(launcher.sourceDirectory),
   );
   const launcherFiles = await listRelativeFiles(launcher.launcherDirectory);
   for (const relativeFile of launcherFiles) {

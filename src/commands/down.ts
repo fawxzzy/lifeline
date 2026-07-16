@@ -119,6 +119,7 @@ export async function runDownCommand(
       listenerPid: undefined,
       portOwnerPid: undefined,
       blockedReason: undefined,
+      crashLoopDetected: false,
       lastKnownStatus: "stopped",
       lastExitAt: new Date().toISOString(),
     },

@@ -229,6 +229,77 @@ async function verifyRestoreEntrypointWiring() {
     "A later startup failure must clean and terminally verify every supervisor already started by the same multi-app invocation.",
   );
 
+  const crashLoopRestore = {
+    name: "crash-loop-cleanup",
+    supervisorPid: 5300,
+    startedAt: "2026-07-15T12:00:00.000Z",
+  };
+  const crashLoopAlive = new Set([crashLoopRestore.supervisorPid]);
+  const crashLoopState = {
+    apps: {
+      "crash-loop-cleanup": {
+        ...stoppedByDown,
+        name: crashLoopRestore.name,
+        supervisorPid: crashLoopRestore.supervisorPid,
+        childPid: 5301,
+        wrapperPid: 5302,
+        listenerPid: 5301,
+        portOwnerPid: 5301,
+        lastKnownStatus: "crash-loop",
+        lastExitAt: undefined,
+        blockedReason: "restart threshold exceeded",
+        crashLoopDetected: true,
+      },
+    },
+  };
+  const crashLoopDownCalls = [];
+  const crashLoopStopCalls = [];
+  let crashLoopWaits = 0;
+  const crashLoopMonitorFailure = await monitorStartupRestore(
+    [crashLoopRestore],
+    {
+      downApp: async (name) => {
+        crashLoopDownCalls.push(name);
+        crashLoopAlive.delete(crashLoopRestore.supervisorPid);
+        crashLoopState.apps[name] = {
+          ...crashLoopState.apps[name],
+          childPid: undefined,
+          wrapperPid: undefined,
+          listenerPid: undefined,
+          portOwnerPid: undefined,
+          lastKnownStatus: "stopped",
+          lastExitAt: "2026-07-15T12:00:10.000Z",
+          blockedReason: undefined,
+          crashLoopDetected: false,
+        };
+        return 0;
+      },
+      processAlive: async (pid) => crashLoopAlive.has(pid),
+      readRuntimeState: async () => crashLoopState,
+      stopSupervisor: async (pid) => {
+        crashLoopStopCalls.push(pid);
+        crashLoopAlive.delete(pid);
+      },
+      wait: async () => {
+        crashLoopWaits += 1;
+      },
+    },
+  );
+  assert(
+    crashLoopMonitorFailure?.includes("entered crash-loop") &&
+      crashLoopMonitorFailure.includes("all supervisors started") &&
+      !crashLoopMonitorFailure.includes("cleanup failed") &&
+      JSON.stringify(crashLoopDownCalls) ===
+        JSON.stringify(["crash-loop-cleanup"]) &&
+      crashLoopStopCalls.length === 0 &&
+      crashLoopWaits === 0 &&
+      !crashLoopAlive.has(crashLoopRestore.supervisorPid) &&
+      crashLoopState.apps["crash-loop-cleanup"].lastKnownStatus === "stopped" &&
+      crashLoopState.apps["crash-loop-cleanup"].blockedReason === undefined &&
+      crashLoopState.apps["crash-loop-cleanup"].crashLoopDetected === false,
+    "Same-PID crash-loop cleanup must use graceful down, clear transient failure markers, verify the original PID dead, and avoid the terminal timeout path.",
+  );
+
   const replacedRestore = {
     name: "replaced-during-hold",
     supervisorPid: 7100,
@@ -733,9 +804,8 @@ async function verifyFreebsdRcDBackendDeterministicBehavior() {
 async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   await ensureBuiltCli();
 
-  const { access, mkdir, mkdtemp, readFile, readdir, writeFile } = await import(
-    "node:fs/promises"
-  );
+  const { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } =
+    await import("node:fs/promises");
   const { createWindowsTaskSchedulerBackend } = await import(
     new URL(
       "../dist/core/startup-backends/windows-task-scheduler.js",
@@ -1492,6 +1562,103 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       unchangedPriorCreates === 1,
     "A rejected owned-upgrade create must verify an unchanged exact prior definition without rewriting or deleting it.",
   );
+
+  registeredXml = firstDefinition;
+  const stableLauncherCli = path.join(launcherDirectory, "cli.js");
+  const createsBeforeStableSource = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  await rm(sourceDirectory, { recursive: true, force: true });
+  const stableSourceBackend = createWindowsTaskSchedulerBackend(runner, {
+    ...options,
+    cliEntrypoint: stableLauncherCli,
+  });
+  const stableSourceInspection = await stableSourceBackend.inspect();
+  const stableSourceReenable = await stableSourceBackend.install(request);
+  assert(
+    stableSourceInspection.status === "installed" &&
+      stableSourceReenable.status === "installed" &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeStableSource &&
+      registeredXml === firstDefinition &&
+      !(await access(sourceDirectory)
+        .then(() => true)
+        .catch(() => false)),
+    "A surviving exact launcher snapshot must inspect and re-enable as a no-op after the owner source directory is gone.",
+  );
+
+  const recoveryRuntimeRoot = path.join(tempRoot, "snapshot-recovery-runtime");
+  let recoveryXml = "";
+  let recoveryCreates = 0;
+  const recoveryRunner = async (args) => {
+    if (args[0] === "/Query") {
+      return recoveryXml
+        ? { code: 0, stdout: recoveryXml, stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+    }
+    if (args[0] === "/Create") {
+      recoveryCreates += 1;
+      recoveryXml = await readFile(args[args.indexOf("/XML") + 1], "utf8");
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    throw new Error(
+      `Unexpected stable-source recovery fixture call: ${args.join(" ")}`,
+    );
+  };
+  const recoveryBackend = createWindowsTaskSchedulerBackend(recoveryRunner, {
+    ...options,
+    rootDirectory: recoveryRuntimeRoot,
+    cliEntrypoint: stableLauncherCli,
+  });
+  const recoveryInstall = await recoveryBackend.install(request);
+  const recoveryDefinition = recoveryXml;
+  const recoveryStartupDirectory = path.join(
+    recoveryRuntimeRoot,
+    ".lifeline",
+    "startup",
+    "windows",
+  );
+  const recoveryLauncherName = (await readdir(recoveryStartupDirectory)).find(
+    (name) => name.startsWith("launcher-"),
+  );
+  assert(
+    recoveryInstall.status === "installed" && recoveryLauncherName,
+    "A surviving launcher snapshot must seed an external recovery runtime without copying generated metadata as payload.",
+  );
+  const recoveryLauncherDirectory = path.join(
+    recoveryStartupDirectory,
+    recoveryLauncherName,
+  );
+  const recoverySupportPath = path.join(
+    recoveryLauncherDirectory,
+    "support.js",
+  );
+  await writeFile(
+    recoverySupportPath,
+    "export const fixture = false;\n",
+    "utf8",
+  );
+  const recoveryRepair = await recoveryBackend.install(request);
+  const recoveryNoop = await recoveryBackend.install(request);
+  const recoveryInspection = await recoveryBackend.inspect();
+  assert(
+    recoveryRepair.status === "installed" &&
+      recoveryNoop.status === "installed" &&
+      recoveryInspection.status === "installed" &&
+      recoveryCreates === 1 &&
+      recoveryXml === recoveryDefinition &&
+      (await readFile(recoverySupportPath, "utf8")) ===
+        (await readFile(path.join(launcherDirectory, "support.js"), "utf8")) &&
+      (await readdir(recoveryLauncherDirectory)).filter(
+        (name) => name === "launcher.json",
+      ).length === 1,
+    "A surviving stable launcher must byte-repair an external snapshot, preserve exact task identity, and then re-enable as a no-op.",
+  );
+
   const expectedQueryArgs = ["/Query", "/TN", "LifelineRestoreAtLogon", "/XML"];
   assert(
     invocations

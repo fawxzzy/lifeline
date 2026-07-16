@@ -86,16 +86,25 @@ async function waitForCrashLoopState() {
 }
 
 async function prepareFixtureConfig() {
-  tempRootDir = await mkdtemp(path.join(tmpdir(), "lifeline-runtime-down-crash-loop-smoke-"));
+  tempRootDir = await mkdtemp(
+    path.join(tmpdir(), "lifeline-runtime-down-crash-loop-smoke-"),
+  );
   const tempFixtureDir = path.join(tempRootDir, "runtime-smoke-app");
 
   await cp("fixtures/runtime-smoke-app", tempFixtureDir, { recursive: true });
 
   const envPath = path.join(tempFixtureDir, ".env.runtime");
   const envRaw = await readFile(envPath, "utf8");
-  await writeFile(envPath, envRaw.replace(/^PORT=.*$/m, `PORT=${runtimePort}`), "utf8");
+  await writeFile(
+    envPath,
+    envRaw.replace(/^PORT=.*$/m, `PORT=${runtimePort}`),
+    "utf8",
+  );
 
-  const tempManifestPath = path.join(tempFixtureDir, "runtime-smoke-app.lifeline.yml");
+  const tempManifestPath = path.join(
+    tempFixtureDir,
+    "runtime-smoke-app.lifeline.yml",
+  );
   const manifestRaw = await readFile(tempManifestPath, "utf8");
   const manifestForCrashLoopDown = manifestRaw
     .replace(/^name: .*$/m, `name: ${appName}`)
@@ -104,7 +113,7 @@ async function prepareFixtureConfig() {
       /^startCommand: .*$/m,
       "startCommand: node -e \"const s=require('node:net').createServer();s.listen(Number(process.env.PORT||0),'127.0.0.1',()=>setTimeout(()=>process.exit(17),100));\"",
     )
-    .replace(/^  restartPolicy: .*$/m, "  restartPolicy: on-failure");
+    .replace(/^ {2}restartPolicy: .*$/m, "  restartPolicy: on-failure");
 
   await writeFile(tempManifestPath, manifestForCrashLoopDown, "utf8");
   manifestPath = tempManifestPath;
@@ -122,7 +131,9 @@ try {
 
   const crashLoopState = await waitForCrashLoopState();
   if (crashLoopState.lastKnownStatus !== "crash-loop") {
-    throw new Error(`Expected crash-loop runtime state before down, found ${JSON.stringify(crashLoopState)}`);
+    throw new Error(
+      `Expected crash-loop runtime state before down, found ${JSON.stringify(crashLoopState)}`,
+    );
   }
 
   const downResult = await run(["down", appName], { allowFailure: true });
@@ -132,19 +143,25 @@ try {
     );
   }
 
-  if (downResult.stderr.includes(`No runtime state found for app ${appName}.`)) {
+  if (
+    downResult.stderr.includes(`No runtime state found for app ${appName}.`)
+  ) {
     throw new Error(
       `Expected down not to take no-history path for crash-loop app.\nstdout:\n${downResult.stdout}\nstderr:\n${downResult.stderr}`,
     );
   }
 
   if (!(await canBindPort(runtimePort))) {
-    throw new Error(`Expected port ${runtimePort} to be free after crash-loop down`);
+    throw new Error(
+      `Expected port ${runtimePort} to be free after crash-loop down`,
+    );
   }
 
   const persistedAfterDown = await readRuntimeState();
   if (!persistedAfterDown) {
-    throw new Error("Expected persisted runtime state after down for crash-loop history");
+    throw new Error(
+      "Expected persisted runtime state after down for crash-loop history",
+    );
   }
 
   if (persistedAfterDown.lastKnownStatus !== "stopped") {
@@ -153,9 +170,9 @@ try {
     );
   }
 
-  if (persistedAfterDown.crashLoopDetected !== true) {
+  if (persistedAfterDown.crashLoopDetected !== false) {
     throw new Error(
-      `Expected crash-loop marker to remain persisted for post-down history, found ${persistedAfterDown.crashLoopDetected}`,
+      `Expected successful down to clear the transient crash-loop marker, found ${persistedAfterDown.crashLoopDetected}`,
     );
   }
 
@@ -165,7 +182,9 @@ try {
     );
   }
 
-  const statusAfterDown = await run(["status", appName], { allowFailure: true });
+  const statusAfterDown = await run(["status", appName], {
+    allowFailure: true,
+  });
   if (!statusAfterDown.stdout.includes(`App ${appName} is stopped.`)) {
     throw new Error(
       `Expected status after down to report stopped for crash-loop cleanup path.\nstdout:\n${statusAfterDown.stdout}\nstderr:\n${statusAfterDown.stderr}`,
