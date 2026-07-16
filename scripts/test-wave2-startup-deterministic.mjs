@@ -229,6 +229,61 @@ async function verifyRestoreEntrypointWiring() {
     "A later startup failure must clean and terminally verify every supervisor already started by the same multi-app invocation.",
   );
 
+  const replacedRestore = {
+    name: "replaced-during-hold",
+    supervisorPid: 7100,
+    startedAt: "2026-07-15T12:00:00.000Z",
+  };
+  const replacementState = {
+    apps: {
+      "replaced-during-hold": {
+        ...stoppedByDown,
+        name: "replaced-during-hold",
+        supervisorPid: 7200,
+        childPid: 7201,
+        wrapperPid: 7202,
+        listenerPid: 7201,
+        portOwnerPid: 7201,
+        lastKnownStatus: "running",
+        lastExitAt: undefined,
+      },
+    },
+  };
+  const replacementAlive = new Set([7100, 7200]);
+  const replacementDownCalls = [];
+  const replacementStopCalls = [];
+  const replacementMonitorFailure = await monitorStartupRestore(
+    [replacedRestore],
+    {
+      downApp: async (name) => {
+        replacementDownCalls.push(name);
+        return 1;
+      },
+      processAlive: async (pid) => replacementAlive.has(pid),
+      readRuntimeState: async () => replacementState,
+      stopSupervisor: async (pid) => {
+        replacementStopCalls.push(pid);
+        replacementAlive.delete(pid);
+      },
+      wait: async () => undefined,
+    },
+  );
+  assert(
+    replacementMonitorFailure?.includes(
+      "supervisor identity changed from 7100 to 7200 during startup hold",
+    ) &&
+      replacementMonitorFailure.includes("all supervisors started") &&
+      !replacementMonitorFailure.includes("cleanup failed") &&
+      replacementDownCalls.length === 0 &&
+      JSON.stringify(replacementStopCalls) === JSON.stringify([7100]) &&
+      !replacementAlive.has(7100) &&
+      replacementAlive.has(7200) &&
+      replacementState.apps["replaced-during-hold"].supervisorPid === 7200 &&
+      replacementState.apps["replaced-during-hold"].lastKnownStatus ===
+        "running",
+    "Startup monitoring must report identity drift while successfully cleaning only the invocation-owned supervisor PID and preserving a newer replacement supervisor and its state.",
+  );
+
   const earlyFailureRestores = [
     {
       name: "early-failure",

@@ -168,10 +168,11 @@ async function waitForStartupRestoreTerminalState(
   restoredApps: RestoredStartupApp[],
   readRuntimeState: () => Promise<RuntimeStateFile> = readState,
   wait: (ms: number) => Promise<void> = delay,
+  now: () => number = Date.now,
 ): Promise<string | undefined> {
-  const deadline = Date.now() + STARTUP_TERMINAL_TIMEOUT_MS;
+  const deadline = now() + STARTUP_TERMINAL_TIMEOUT_MS;
   let failure = "startup terminal state was not inspected";
-  while (Date.now() <= deadline) {
+  while (now() <= deadline) {
     let state: RuntimeStateFile;
     try {
       state = await readRuntimeState();
@@ -192,21 +193,52 @@ export async function cleanupPartialStartupRestore(
   restoredApps: RestoredStartupApp[],
   dependencies: StartupRestoreCleanupDependencies = {},
 ): Promise<string | undefined> {
-  const downApp = dependencies.downApp ?? runDownCommand;
+  const downApp = dependencies.downApp;
   const processAlive = dependencies.processAlive ?? isProcessAlive;
   const readRuntimeState = dependencies.readRuntimeState ?? readState;
   const stopSupervisor = dependencies.stopSupervisor ?? stopProcess;
   const wait = dependencies.wait ?? delay;
+  const now = dependencies.now ?? Date.now;
   const cleanupFailures: string[] = [];
+  const preservedReplacements = new Map<string, number>();
 
   for (const restored of [...restoredApps].reverse()) {
-    const exitCode = await downApp(restored.name).catch(() => 1);
+    let currentState: RuntimeStateFile;
+    try {
+      currentState = await readRuntimeState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      cleanupFailures.push(
+        `${restored.name} pre-down state inspection failed: ${message}`,
+      );
+      continue;
+    }
+    const currentApp = currentState.apps[restored.name];
+    if (!currentApp) {
+      cleanupFailures.push(
+        `${restored.name} pre-down runtime state is missing`,
+      );
+      continue;
+    }
+    if (currentApp.supervisorPid !== restored.supervisorPid) {
+      preservedReplacements.set(restored.name, currentApp.supervisorPid);
+      console.log(
+        `Startup cleanup preserved replacement supervisor ${currentApp.supervisorPid} for ${restored.name}; stopping only invocation-owned supervisor ${restored.supervisorPid}.`,
+      );
+      continue;
+    }
+    const exitCode = await (downApp
+      ? downApp(restored.name)
+      : runDownCommand(restored.name, {
+          expectedSupervisorPid: restored.supervisorPid,
+        })
+    ).catch(() => 1);
     if (exitCode !== 0) {
       cleanupFailures.push(`${restored.name} down exited ${exitCode}`);
     }
   }
 
-  const deadline = Date.now() + STARTUP_TERMINAL_TIMEOUT_MS;
+  const deadline = now() + STARTUP_TERMINAL_TIMEOUT_MS;
   let alive = restoredApps.filter(() => false);
   do {
     alive = [];
@@ -235,7 +267,7 @@ export async function cleanupPartialStartupRestore(
     if (alive.length > 0) {
       await wait(250);
     }
-  } while (alive.length > 0 && Date.now() <= deadline);
+  } while (alive.length > 0 && now() <= deadline);
 
   const stillAlive: RestoredStartupApp[] = [];
   for (const restored of restoredApps) {
@@ -259,13 +291,46 @@ export async function cleanupPartialStartupRestore(
     );
   }
 
-  const terminalFailure = await waitForStartupRestoreTerminalState(
-    restoredApps,
-    readRuntimeState,
-    wait,
+  const sameSupervisorApps = restoredApps.filter(
+    (restored) => !preservedReplacements.has(restored.name),
   );
+  const terminalFailure =
+    sameSupervisorApps.length > 0
+      ? await waitForStartupRestoreTerminalState(
+          sameSupervisorApps,
+          readRuntimeState,
+          wait,
+          now,
+        )
+      : undefined;
   if (terminalFailure) {
     cleanupFailures.push(terminalFailure);
+  }
+
+  if (preservedReplacements.size > 0) {
+    let finalState: RuntimeStateFile | undefined;
+    try {
+      finalState = await readRuntimeState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      cleanupFailures.push(
+        `replacement supervisor state readback failed: ${message}`,
+      );
+    }
+    if (finalState) {
+      for (const restored of restoredApps) {
+        const replacementPid = preservedReplacements.get(restored.name);
+        if (replacementPid === undefined) {
+          continue;
+        }
+        const finalApp = finalState.apps[restored.name];
+        if (finalApp?.supervisorPid !== replacementPid) {
+          cleanupFailures.push(
+            `${restored.name} replacement supervisor state changed from ${replacementPid} to ${finalApp?.supervisorPid ?? "missing"} during cleanup verification`,
+          );
+        }
+      }
+    }
   }
   return cleanupFailures.length > 0 ? cleanupFailures.join("; ") : undefined;
 }
@@ -284,6 +349,7 @@ export async function monitorStartupRestore(
       restoredApps,
       dependencies.readRuntimeState ?? readState,
       dependencies.wait ?? delay,
+      dependencies.now ?? Date.now,
     ));
   if (!terminalFailure) {
     return undefined;
