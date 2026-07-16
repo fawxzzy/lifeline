@@ -6,7 +6,7 @@ declare namespace NodeJS {
 
 declare module "node:fs/promises" {
   export function readFile(path: string, encoding: string): Promise<string>;
-  export function readFile(path: string): Promise<string>;
+  export function readFile(path: string): Promise<Uint8Array>;
   export function writeFile(
     path: string,
     data: string,
@@ -18,6 +18,7 @@ declare module "node:fs/promises" {
     options?: { recursive?: boolean },
   ): Promise<void>;
   export function access(path: string): Promise<void>;
+  export function unlink(path: string): Promise<void>;
   export function open(
     path: string,
     flags: string,

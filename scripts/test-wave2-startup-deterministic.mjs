@@ -494,7 +494,7 @@ async function verifyFreebsdRcDBackendDeterministicBehavior() {
 async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   await ensureBuiltCli();
 
-  const { access, mkdir, mkdtemp, readFile, writeFile } = await import(
+  const { access, mkdir, mkdtemp, readFile, readdir, writeFile } = await import(
     "node:fs/promises"
   );
   const { createWindowsTaskSchedulerBackend } = await import(
@@ -610,6 +610,50 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "Repeated Windows startup enable must preserve the exact definition without creating a duplicate.",
   );
 
+  const startupDirectory = path.join(
+    runtimeRoot,
+    ".lifeline",
+    "startup",
+    "windows",
+  );
+  const launcherDirectoryName = (await readdir(startupDirectory)).find((name) =>
+    name.startsWith("launcher-"),
+  );
+  assert(
+    launcherDirectoryName,
+    "Expected startup install to create one content-addressed launcher directory.",
+  );
+  const launcherDirectory = path.join(startupDirectory, launcherDirectoryName);
+  const launcherMetadataPath = path.join(launcherDirectory, "launcher.json");
+  const launcherSupportPath = path.join(launcherDirectory, "support.js");
+  const unexpectedLauncherPath = path.join(launcherDirectory, "unexpected.js");
+  const metadataBeforeCorruption = await readFile(launcherMetadataPath, "utf8");
+  await writeFile(launcherSupportPath, "export const fixture = false;\n", "utf8");
+  await writeFile(unexpectedLauncherPath, "throw new Error('foreign');\n", "utf8");
+  assert(
+    (await readFile(launcherMetadataPath, "utf8")) === metadataBeforeCorruption,
+    "Launcher corruption fixture must retain the trusted-looking metadata.",
+  );
+  const createsBeforeLauncherRepair = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const repairResult = await backend.install(request);
+  const unexpectedFileExists = await access(unexpectedLauncherPath)
+    .then(() => true)
+    .catch(() => false);
+  assert(
+    repairResult.status === "installed" &&
+      (await readFile(launcherSupportPath, "utf8")) ===
+        (await readFile(path.join(sourceDirectory, "support.js"), "utf8")) &&
+      unexpectedFileExists === false &&
+      (await readFile(launcherMetadataPath, "utf8")) ===
+        metadataBeforeCorruption &&
+      registeredXml === firstDefinition &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeLauncherRepair,
+    "Repeated enable must byte-verify and repair a corrupted launcher snapshot without changing the exact task definition.",
+  );
+
   registeredXml = registeredXml.replace(
     "<RunLevel>LeastPrivilege</RunLevel>",
     "<RunLevel>HighestAvailable</RunLevel>",
@@ -625,8 +669,92 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "Lifeline-owned same-root drift must reconcile through one forced update after ownership validation.",
   );
 
+  registeredXml = firstDefinition
+    .replace(
+      "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+      "<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>",
+    )
+    .replace(
+      "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+      "<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>",
+    )
+    .replace(
+      "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+      "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>",
+    );
+  const settingsDriftInspection = await backend.inspect();
+  const settingsDriftRepair = await backend.install(request);
+  assert(
+    settingsDriftInspection.status === "not-installed" &&
+      settingsDriftRepair.status === "installed" &&
+      invocations
+        .filter(([command]) => command === "/Create")
+        .at(-1)
+        ?.includes("/F") &&
+      registeredXml === firstDefinition,
+    "Reliability-critical Windows settings drift must fail exact inspection and repair to the complete required contract.",
+  );
+
+  registeredXml = firstDefinition.replace(
+    "  </Settings>",
+    `    <AllowStartOnDemand>false</AllowStartOnDemand>
+  </Settings>`,
+  );
+  const extraSettingInspection = await backend.inspect();
+  const extraSettingRepair = await backend.install(request);
+  assert(
+    extraSettingInspection.status === "not-installed" &&
+      extraSettingRepair.status === "installed" &&
+      invocations
+        .filter(([command]) => command === "/Create")
+        .at(-1)
+        ?.includes("/F") &&
+      registeredXml === firstDefinition,
+    "An unrecognized behavioral setting must prevent installed acceptance and reconcile to the exact v4 Settings structure.",
+  );
+
+  registeredXml = firstDefinition.replace(
+    "  </Actions>",
+    `    <Exec>
+      <Command>C:\\Windows\\System32\\cmd.exe</Command>
+      <Arguments>/c exit 0</Arguments>
+      <WorkingDirectory>${runtimeRoot}</WorkingDirectory>
+    </Exec>
+  </Actions>`,
+  );
+  const createsBeforeExtraAction = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const deletesBeforeExtraAction = invocations.filter(
+    ([command]) => command === "/Delete",
+  ).length;
+  const extraActionInstall = await backend.install(request);
+  const extraActionUninstall = await backend.uninstall(request);
+  assert(
+    extraActionInstall.ok === false &&
+      extraActionUninstall.ok === false &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeExtraAction &&
+      invocations.filter(([command]) => command === "/Delete").length ===
+        deletesBeforeExtraAction &&
+      registeredXml.includes("cmd.exe"),
+    "A same-root task with a second action must be rejected without overwrite or removal.",
+  );
+
+  const v3Definition = firstDefinition.replace(
+    "Windows startup v4.",
+    "Windows startup v3.",
+  );
+  registeredXml = v3Definition;
+  const v3UpgradeResult = await backend.install(request);
+  assert(
+    v3UpgradeResult.status === "installed" &&
+      registeredXml === firstDefinition,
+    "A recognized same-current-user v3 task must remain upgradeable to the exact v4 definition.",
+  );
+
   const v2Definition = firstDefinition
-    .replace("Windows startup v3.", "Windows startup v2.")
+    .replace("Windows startup v4.", "Windows startup v2.")
     .replace(" restore --startup</Arguments>", " restore</Arguments>");
   registeredXml = v2Definition;
   const v2UpgradeResult = await backend.install(request);
@@ -637,7 +765,7 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
         .at(-1)
         ?.includes("/F") &&
       registeredXml === firstDefinition,
-    "A Lifeline v2 task with the same root and recognized stable action must upgrade to v3.",
+    "A Lifeline v2 task with the same root and recognized stable action must upgrade to v4.",
   );
 
   registeredXml = v2Definition.replaceAll(
@@ -782,6 +910,57 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       rollbackXml === "" &&
       rollbackInvocations.some(([command]) => command === "/Delete"),
     "A newly created task that fails exact readback must be rolled back through the owned task identity.",
+  );
+
+  let upgradeRollbackXml = v2Definition;
+  let upgradeCreateCount = 0;
+  const upgradeRollbackInvocations = [];
+  const upgradeRollbackRunner = async (args) => {
+    upgradeRollbackInvocations.push([...args]);
+    if (args[0] === "/Query") {
+      return upgradeRollbackXml
+        ? { code: 0, stdout: upgradeRollbackXml, stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+    }
+    if (args[0] === "/Create") {
+      upgradeCreateCount += 1;
+      const xmlPath = args[args.indexOf("/XML") + 1];
+      const requestedXml = await readFile(xmlPath, "utf8");
+      upgradeRollbackXml =
+        upgradeCreateCount === 1
+          ? requestedXml.replace(
+              " restore --startup</Arguments>",
+              " status</Arguments>",
+            )
+          : requestedXml;
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    if (args[0] === "/Delete") {
+      upgradeRollbackXml = "";
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    throw new Error(
+      `Unexpected upgrade rollback fixture call: ${args.join(" ")}`,
+    );
+  };
+  const upgradeRollbackBackend = createWindowsTaskSchedulerBackend(
+    upgradeRollbackRunner,
+    options,
+  );
+  const upgradeRollbackResult = await upgradeRollbackBackend.install(request);
+  assert(
+    upgradeRollbackResult.ok === false &&
+      upgradeRollbackResult.detail.includes(
+        "exact prior Lifeline-owned definition was restored and verified",
+      ) &&
+      upgradeRollbackXml === v2Definition &&
+      upgradeCreateCount === 2 &&
+      !upgradeRollbackInvocations.some(([command]) => command === "/Delete"),
+    "A failed owned-drift upgrade must restore and verify the exact prior v2 definition without deleting it.",
   );
 }
 

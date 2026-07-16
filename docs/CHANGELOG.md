@@ -4,6 +4,8 @@
 
 - Hardened Windows logon restore around one current-user Task Scheduler definition with explicit runtime-home arguments, a content-addressed stable launcher snapshot, limited run level, `IgnoreNew`, exact readback, idempotent re-enable, and foreign-task rejection.
 - Added fail-closed startup terminal verification and narrowly versioned same-root ownership recognition so stale-running supervisor loss fails while recognized v2 tasks remain upgradeable and removable.
+- Added byte-for-byte stable-launcher reuse checks plus state-aware registration rollback so corrupt snapshots self-repair and failed owned upgrades restore their exact prior task instead of deleting it.
+- Tightened v4 Windows readback to the structurally exact declared Settings block and exactly one expected action, repairing safe owned drift while rejecting behavioral extras and multi-action definitions.
 - Added bounded `restore --startup` semantics so enabled logon restoration can revive stopped/restorable apps without changing ordinary restore behavior, while a long-lived task wrapper preserves the supervised process tree until `lifeline down` completes.
 - Completed the supervised Playbook restart and Windows logon-restore roadmap lanes with real manual Task Scheduler execution, stable runtime placement, canonical Observer health, singleton process proof, and clean stopped/task-enabled convergence.
 - WHY: A short-lived scheduled restore action could otherwise lose its child supervisor when Task Scheduler closed the completed action tree, and a worktree-bound launcher or manifest would not survive owner worktree archival.

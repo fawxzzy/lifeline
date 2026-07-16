@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  access,
   copyFile,
   mkdir,
   readFile,
   readdir,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -22,7 +22,7 @@ export const WINDOWS_STARTUP_TASK_NAME = "LifelineRestoreAtLogon";
 const TASK_MECHANISM = "windows-task-scheduler";
 const TASK_AUTHOR = "Lifeline";
 const TASK_URI = `\\${WINDOWS_STARTUP_TASK_NAME}`;
-const TASK_DEFINITION_VERSION = 3;
+const TASK_DEFINITION_VERSION = 4;
 
 interface SchedulerCommandResult {
   code: number;
@@ -53,6 +53,7 @@ interface LauncherPlan {
   launcherEntrypoint: string;
   launcherMetadataPath: string;
   taskDefinitionPath: string;
+  rollbackDefinitionPath: string;
 }
 
 interface ExpectedTaskDefinition {
@@ -78,6 +79,7 @@ interface DetailedTaskInspection {
   state: DetailedTaskState;
   detail: string;
   expected: ExpectedTaskDefinition;
+  existingXml?: string;
 }
 
 function normalizeOutput(value: string): string {
@@ -199,8 +201,122 @@ function tagValue(xml: string, tag: string): string {
   return xmlDecode(match?.[1]?.trim() ?? "");
 }
 
-function isTrueOrDefault(value: string): boolean {
-  return value === "" || value.toLowerCase() === "true";
+function countOpeningTags(xml: string, tag: string): number {
+  return xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>`, "gi"))?.length ?? 0;
+}
+
+function isTrueOrSchedulerDefault(value: string): boolean {
+  return value === "" || value === "true";
+}
+
+interface FlatXmlChild {
+  attributes: string;
+  value: string;
+}
+
+function parseFlatXmlChildren(
+  xml: string,
+): Map<string, FlatXmlChild> | undefined {
+  const children = new Map<string, FlatXmlChild>();
+  const childPattern =
+    /<([A-Za-z][A-Za-z0-9]*)\b([^>]*)>([\s\S]*?)<\/\1>/g;
+  let cursor = 0;
+  for (const match of xml.matchAll(childPattern)) {
+    const index = match.index ?? -1;
+    const tag = match[1];
+    if (
+      index < cursor ||
+      xml.slice(cursor, index).trim() !== "" ||
+      !tag ||
+      children.has(tag)
+    ) {
+      return undefined;
+    }
+    children.set(tag, {
+      attributes: match[2] ?? "",
+      value: match[3] ?? "",
+    });
+    cursor = index + match[0].length;
+  }
+  return xml.slice(cursor).trim() === "" ? children : undefined;
+}
+
+function tagHasNoAttributes(xml: string, tag: string): boolean {
+  const matches = [
+    ...xml.matchAll(new RegExp(`<${tag}([^>]*)>`, "gi")),
+  ];
+  return matches.length === 1 && (matches[0]?.[1] ?? "").trim() === "";
+}
+
+function tagAttributeValue(
+  xml: string,
+  tag: string,
+  attribute: string,
+): string {
+  const openingTag = xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>`, "i"))?.[0];
+  const value = openingTag?.match(
+    new RegExp(`\\b${attribute}\\s*=\\s*"([^"]*)"`, "i"),
+  )?.[1];
+  return xmlDecode(value ?? "");
+}
+
+function singleExecAction(xml: string): string | undefined {
+  if (
+    countOpeningTags(xml, "Actions") !== 1 ||
+    tagAttributeValue(xml, "Actions", "Context") !== "Author"
+  ) {
+    return undefined;
+  }
+  const actions = sectionValue(xml, "Actions");
+  const execBlocks =
+    actions.match(/<Exec(?:\s[^>]*)?>[\s\S]*?<\/Exec>/gi) ?? [];
+  if (
+    execBlocks.length !== 1 ||
+    actions.replace(execBlocks[0] ?? "", "").trim() !== ""
+  ) {
+    return undefined;
+  }
+  return sectionValue(execBlocks[0] ?? "", "Exec");
+}
+
+function matchesRequiredTaskSettings(settings: string): boolean {
+  const expectedValues = new Map<string, string>([
+    ["DisallowStartIfOnBatteries", "false"],
+    ["StopIfGoingOnBatteries", "false"],
+    ["ExecutionTimeLimit", "PT0S"],
+    ["MultipleInstancesPolicy", "IgnoreNew"],
+    ["StartWhenAvailable", "true"],
+    ["UseUnifiedSchedulingEngine", "true"],
+  ]);
+  const children = parseFlatXmlChildren(settings);
+  if (!children || children.size !== expectedValues.size + 1) {
+    return false;
+  }
+  for (const [tag, expected] of expectedValues) {
+    const child = children.get(tag);
+    if (
+      !child ||
+      child.attributes.trim() !== "" ||
+      xmlDecode(child.value.trim()) !== expected
+    ) {
+      return false;
+    }
+  }
+
+  const idleSettings = children.get("IdleSettings");
+  if (!idleSettings || idleSettings.attributes.trim() !== "") {
+    return false;
+  }
+  const idleChildren = parseFlatXmlChildren(idleSettings.value);
+  return (
+    idleChildren?.size === 2 &&
+    idleChildren.get("StopOnIdleEnd")?.attributes.trim() === "" &&
+    xmlDecode(idleChildren.get("StopOnIdleEnd")?.value.trim() ?? "") ===
+      "false" &&
+    idleChildren.get("RestartOnIdle")?.attributes.trim() === "" &&
+    xmlDecode(idleChildren.get("RestartOnIdle")?.value.trim() ?? "") ===
+      "false"
+  );
 }
 
 function isTaskMissing(result: SchedulerCommandResult): boolean {
@@ -222,7 +338,7 @@ async function listFilesRecursively(directory: string): Promise<string[]> {
     const absolutePath = path.join(directory, name);
     if (typeof entry !== "string" && entry.isDirectory()) {
       files.push(...(await listFilesRecursively(absolutePath)));
-    } else if (typeof entry === "string" || entry.isFile()) {
+    } else {
       files.push(absolutePath);
     }
   }
@@ -252,10 +368,69 @@ async function copyDirectory(source: string, destination: string): Promise<void>
     const destinationPath = path.join(destination, name);
     if (typeof entry !== "string" && entry.isDirectory()) {
       await copyDirectory(sourcePath, destinationPath);
-    } else if (typeof entry === "string" || entry.isFile()) {
+    } else {
       await copyFile(sourcePath, destinationPath);
     }
   }
+}
+
+async function listRelativeFiles(directory: string): Promise<string[]> {
+  return (await listFilesRecursively(directory)).map((file) =>
+    path.relative(directory, file).replaceAll("\\", "/"),
+  );
+}
+
+async function filesHaveSameBytes(
+  leftPath: string,
+  rightPath: string,
+): Promise<boolean> {
+  const [left, right] = await Promise.all([
+    readFile(leftPath),
+    readFile(rightPath),
+  ]).catch(() => [undefined, undefined] as const);
+  if (!left || !right || left.byteLength !== right.byteLength) {
+    return false;
+  }
+
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function launcherSnapshotMatches(
+  launcher: LauncherPlan,
+  expectedMetadata: string,
+): Promise<boolean> {
+  const existingMetadata = await readFile(
+    launcher.launcherMetadataPath,
+    "utf8",
+  ).catch(() => "");
+  if (existingMetadata !== expectedMetadata) {
+    return false;
+  }
+
+  const sourceFiles = await listRelativeFiles(launcher.sourceDirectory);
+  const launcherFiles = (
+    await listRelativeFiles(launcher.launcherDirectory).catch(() => [])
+  ).filter((file) => file !== "launcher.json");
+  if (JSON.stringify(sourceFiles) !== JSON.stringify(launcherFiles)) {
+    return false;
+  }
+
+  for (const relativeFile of sourceFiles) {
+    if (
+      !(await filesHaveSameBytes(
+        path.join(launcher.sourceDirectory, relativeFile),
+        path.join(launcher.launcherDirectory, relativeFile),
+      ))
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function buildLauncherPlan(
@@ -281,6 +456,10 @@ async function buildLauncherPlan(
     launcherEntrypoint: path.join(launcherDirectory, "cli.js"),
     launcherMetadataPath: path.join(launcherDirectory, "launcher.json"),
     taskDefinitionPath: path.join(startupDirectory, "task-definition.xml"),
+    rollbackDefinitionPath: path.join(
+      startupDirectory,
+      "task-definition.rollback.xml",
+    ),
   };
 }
 
@@ -315,23 +494,16 @@ function buildTaskXml(expected: Omit<ExpectedTaskDefinition, "xml">): string {
     </Principal>
   </Principals>
   <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <IdleSettings>
       <StopOnIdleEnd>false</StopOnIdleEnd>
       <RestartOnIdle>false</RestartOnIdle>
     </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -385,7 +557,10 @@ function isLifelineOwnedTask(
   const registrationInfo = sectionValue(xml, "RegistrationInfo");
   const logonTrigger = sectionValue(xml, "LogonTrigger");
   const principal = sectionValue(xml, "Principal");
-  const action = sectionValue(xml, "Exec");
+  const action = singleExecAction(xml);
+  if (!action) {
+    return false;
+  }
   const description = tagValue(registrationInfo, "Description");
   const descriptionMatch = description.match(
     /^Managed by Lifeline Windows startup v([0-9]+)\. Root: (.+)$/,
@@ -405,9 +580,10 @@ function isLifelineOwnedTask(
     "startup",
     "windows",
   );
-  const recognizedVersion = version === 2 || version === 3;
+  const recognizedVersion = version === 2 || version === 3 || version === 4;
   const recognizedVersionAction =
-    (version === 2 && !hasStartupFlag) || (version === 3 && hasStartupFlag);
+    (version === 2 && !hasStartupFlag) ||
+    ((version === 3 || version === 4) && hasStartupFlag);
 
   return (
     tagValue(registrationInfo, "Author") === TASK_AUTHOR &&
@@ -439,20 +615,23 @@ function matchesExpectedTask(
   const logonTrigger = sectionValue(xml, "LogonTrigger");
   const principal = sectionValue(xml, "Principal");
   const settings = sectionValue(xml, "Settings");
-  const action = sectionValue(xml, "Exec");
-  const runLevel = tagValue(principal, "RunLevel");
+  const action = singleExecAction(xml);
+  if (!action) {
+    return false;
+  }
 
   return (
     tagValue(registrationInfo, "Author") === TASK_AUTHOR &&
     tagValue(registrationInfo, "Description") === expected.description &&
     tagValue(registrationInfo, "URI") === TASK_URI &&
     matchesExpectedIdentity(tagValue(logonTrigger, "UserId"), expected.identity) &&
-    isTrueOrDefault(tagValue(logonTrigger, "Enabled")) &&
+    isTrueOrSchedulerDefault(tagValue(logonTrigger, "Enabled")) &&
     matchesExpectedIdentity(tagValue(principal, "UserId"), expected.identity) &&
     tagValue(principal, "LogonType") === "InteractiveToken" &&
-    (runLevel === "" || runLevel === "LeastPrivilege") &&
-    tagValue(settings, "MultipleInstancesPolicy") === "IgnoreNew" &&
-    isTrueOrDefault(tagValue(settings, "Enabled")) &&
+    (tagValue(principal, "RunLevel") === "" ||
+      tagValue(principal, "RunLevel") === "LeastPrivilege") &&
+    tagHasNoAttributes(xml, "Settings") &&
+    matchesRequiredTaskSettings(settings) &&
     normalizeComparablePath(tagValue(action, "Command")) ===
       normalizeComparablePath(expected.nodeExecutable) &&
     tagValue(action, "Arguments") === expected.arguments &&
@@ -503,6 +682,7 @@ async function inspectTaskDetailed(
     return {
       state: "installed",
       expected,
+      existingXml: queryResult.stdout,
       detail:
         `Task ${WINDOWS_STARTUP_TASK_NAME} is installed for current user ${expected.identity.account} ` +
         `and runs ${expected.arguments} from ${expected.workingDirectory}.`,
@@ -513,6 +693,7 @@ async function inspectTaskDetailed(
     return {
       state: "owned-drift",
       expected,
+      existingXml: queryResult.stdout,
       detail: `Task ${WINDOWS_STARTUP_TASK_NAME} is Lifeline-owned for ${expected.rootDirectory} but its definition drifted from the current launcher contract.`,
     };
   }
@@ -520,6 +701,7 @@ async function inspectTaskDetailed(
   return {
     state: "conflict",
     expected,
+    existingXml: queryResult.stdout,
     detail: `Task ${WINDOWS_STARTUP_TASK_NAME} exists with a foreign or conflicting definition; Lifeline will not overwrite or remove it.`,
   };
 }
@@ -530,23 +712,115 @@ async function ensureLauncherSnapshot(launcher: LauncherPlan): Promise<void> {
     null,
     2,
   )}\n`;
-  const existingMetadata = await readFile(
-    launcher.launcherMetadataPath,
-    "utf8",
-  ).catch(() => "");
-  const launcherExists = await access(launcher.launcherEntrypoint)
-    .then(() => true)
-    .catch(() => false);
-  if (launcherExists && existingMetadata === expectedMetadata) {
+  if (await launcherSnapshotMatches(launcher, expectedMetadata)) {
     return;
   }
 
   await copyDirectory(launcher.sourceDirectory, launcher.launcherDirectory);
+  const sourceFileSet = new Set(
+    await listRelativeFiles(launcher.sourceDirectory),
+  );
+  const launcherFiles = await listRelativeFiles(launcher.launcherDirectory);
+  for (const relativeFile of launcherFiles) {
+    if (relativeFile !== "launcher.json" && !sourceFileSet.has(relativeFile)) {
+      await unlink(path.join(launcher.launcherDirectory, relativeFile));
+    }
+  }
   await writeFile(
     launcher.launcherMetadataPath,
     expectedMetadata,
     "utf8",
   );
+  if (!(await launcherSnapshotMatches(launcher, expectedMetadata))) {
+    throw new Error(
+      `Stable launcher snapshot verification failed at ${launcher.launcherDirectory}.`,
+    );
+  }
+}
+
+function normalizeTaskXmlForComparison(xml: string): string {
+  return xml
+    .replace(/^\s*<\?xml[^>]*>\s*/i, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/>\s+</g, "><")
+    .trim();
+}
+
+async function removeNewlyCreatedTaskAfterFailedReadback(
+  runner: WindowsSchedulerRunner,
+): Promise<string> {
+  const deleteResult = await runner([
+    "/Delete",
+    "/TN",
+    WINDOWS_STARTUP_TASK_NAME,
+    "/F",
+  ]);
+  if (deleteResult.code !== 0 && !isTaskMissing(deleteResult)) {
+    return `Rollback also failed: ${
+      deleteResult.stderr ||
+      deleteResult.stdout ||
+      "unknown scheduler delete error"
+    }`;
+  }
+
+  const readback = await runner([
+    "/Query",
+    "/TN",
+    WINDOWS_STARTUP_TASK_NAME,
+    "/XML",
+    "ONE",
+  ]);
+  return readback.code !== 0 && isTaskMissing(readback)
+    ? "The newly created packet-owned registration was rolled back and absence was verified."
+    : `Rollback deletion could not be verified: ${
+        readback.stderr ||
+        readback.stdout ||
+        "task still returned a scheduler definition"
+      }`;
+}
+
+async function restorePriorOwnedTaskAfterFailedReadback(
+  runner: WindowsSchedulerRunner,
+  launcher: LauncherPlan,
+  priorXml: string,
+): Promise<string> {
+  const restorableXml = priorXml.replace(/^\s*<\?xml[^>]*>\s*/i, "");
+  await writeFile(launcher.rollbackDefinitionPath, restorableXml, "utf8");
+  const restoreResult = await runner([
+    "/Create",
+    "/TN",
+    WINDOWS_STARTUP_TASK_NAME,
+    "/XML",
+    launcher.rollbackDefinitionPath,
+    "/F",
+  ]);
+  if (restoreResult.code !== 0) {
+    return `Prior owned definition restoration failed: ${
+      restoreResult.stderr ||
+      restoreResult.stdout ||
+      "unknown scheduler restore error"
+    }`;
+  }
+
+  const restoredReadback = await runner([
+    "/Query",
+    "/TN",
+    WINDOWS_STARTUP_TASK_NAME,
+    "/XML",
+    "ONE",
+  ]);
+  if (
+    restoredReadback.code === 0 &&
+    normalizeTaskXmlForComparison(restoredReadback.stdout) ===
+      normalizeTaskXmlForComparison(priorXml)
+  ) {
+    return "The exact prior Lifeline-owned definition was restored and verified.";
+  }
+  return `Prior owned definition restoration could not be verified: ${
+    restoredReadback.stderr ||
+    restoredReadback.stdout ||
+    "scheduler returned a different definition"
+  }`;
 }
 
 function toBackendInspection(
@@ -634,20 +908,14 @@ export function createWindowsTaskSchedulerBackend(
 
       const readback = await inspectTaskDetailed(runner, options);
       if (readback.state !== "installed") {
-        const rollbackResult = await runner([
-          "/Delete",
-          "/TN",
-          WINDOWS_STARTUP_TASK_NAME,
-          "/F",
-        ]);
         const rollbackDetail =
-          rollbackResult.code === 0 || isTaskMissing(rollbackResult)
-            ? "The packet-owned registration was rolled back."
-            : `Rollback also failed: ${
-                rollbackResult.stderr ||
-                rollbackResult.stdout ||
-                "unknown scheduler error"
-              }`;
+          inspection.state === "owned-drift" && inspection.existingXml
+            ? await restorePriorOwnedTaskAfterFailedReadback(
+                runner,
+                inspection.expected.launcher,
+                inspection.existingXml,
+              )
+            : await removeNewlyCreatedTaskAfterFailedReadback(runner);
         return {
           status: "not-installed",
           ok: false,
