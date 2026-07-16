@@ -52,7 +52,6 @@ async function queryWindowsTaskXml() {
       "/TN",
       "LifelineRestoreAtLogon",
       "/XML",
-      "ONE",
     ]);
     return stdout;
   } catch {

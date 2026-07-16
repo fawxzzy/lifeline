@@ -780,7 +780,6 @@ async function inspectTaskDetailed(
     "/TN",
     WINDOWS_STARTUP_TASK_NAME,
     "/XML",
-    "ONE",
   ]);
 
   if (queryResult.code === -1) {
@@ -908,7 +907,6 @@ async function removeNewlyCreatedTaskAfterFailedReadback(
     "/TN",
     WINDOWS_STARTUP_TASK_NAME,
     "/XML",
-    "ONE",
   ]);
   return readback.code !== 0 && isTaskMissing(readback)
     ? {
@@ -957,7 +955,6 @@ async function restorePriorOwnedTaskAfterFailedReadback(
     "/TN",
     WINDOWS_STARTUP_TASK_NAME,
     "/XML",
-    "ONE",
   ]);
   if (
     restoredReadback.code === 0 &&
@@ -1002,7 +999,6 @@ async function reconcileFailedTaskCreation(
     "/TN",
     WINDOWS_STARTUP_TASK_NAME,
     "/XML",
-    "ONE",
   ]);
 
   if (inspection.state === "owned-drift" && inspection.existingXml) {
@@ -1251,7 +1247,6 @@ export function createWindowsTaskSchedulerBackend(
         "/TN",
         WINDOWS_STARTUP_TASK_NAME,
         "/XML",
-        "ONE",
       ]);
       if (removalReadback.code === 0) {
         return {

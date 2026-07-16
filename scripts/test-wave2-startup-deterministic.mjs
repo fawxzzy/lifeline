@@ -1492,6 +1492,15 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       unchangedPriorCreates === 1,
     "A rejected owned-upgrade create must verify an unchanged exact prior definition without rewriting or deleting it.",
   );
+  const expectedQueryArgs = ["/Query", "/TN", "LifelineRestoreAtLogon", "/XML"];
+  assert(
+    invocations
+      .filter(([command]) => command === "/Query")
+      .every(
+        (args) => JSON.stringify(args) === JSON.stringify(expectedQueryArgs),
+      ),
+    "Every Windows task query/readback must use the documented exact-task /XML flag form without an optional XML type token.",
+  );
 }
 
 async function verifyAixInittabBackendDeterministicBehavior() {
