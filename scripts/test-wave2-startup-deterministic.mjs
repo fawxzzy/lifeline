@@ -923,6 +923,76 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "Windows startup dry-run must not create launcher or state paths.",
   );
 
+  const hashDriftSourceDirectory = path.join(tempRoot, "hash-drift-dist");
+  const hashDriftRuntimeRoot = path.join(tempRoot, "hash-drift-runtime");
+  await mkdir(hashDriftSourceDirectory, { recursive: true });
+  await writeFile(
+    path.join(hashDriftSourceDirectory, "cli.js"),
+    "console.log('hash drift fixture');\n",
+    "utf8",
+  );
+  const hashDriftSupportPath = path.join(
+    hashDriftSourceDirectory,
+    "support.js",
+  );
+  await writeFile(
+    hashDriftSupportPath,
+    "export const version = 'planned';\n",
+    "utf8",
+  );
+  let hashDriftCreateCount = 0;
+  let hashDriftHookCount = 0;
+  const hashDriftBackend = createWindowsTaskSchedulerBackend(
+    async (args) => {
+      if (args[0] === "/Query") {
+        return {
+          code: 1,
+          stdout: "",
+          stderr: "ERROR: The system cannot find the file specified.",
+        };
+      }
+      if (args[0] === "/Create") {
+        hashDriftCreateCount += 1;
+      }
+      throw new Error(
+        `Unexpected hash-drift scheduler call: ${args.join(" ")}`,
+      );
+    },
+    {
+      ...options,
+      rootDirectory: hashDriftRuntimeRoot,
+      cliEntrypoint: path.join(hashDriftSourceDirectory, "cli.js"),
+      beforeLauncherSnapshotCopy: async () => {
+        hashDriftHookCount += 1;
+        await writeFile(
+          hashDriftSupportPath,
+          "export const version = 'mutated-after-plan';\n",
+          "utf8",
+        );
+      },
+    },
+  );
+  let hashDriftError = "";
+  try {
+    await hashDriftBackend.install(request);
+  } catch (error) {
+    hashDriftError = error instanceof Error ? error.message : String(error);
+  }
+  const hashDriftStartupDirectory = path.join(
+    hashDriftRuntimeRoot,
+    ".lifeline",
+    "startup",
+    "windows",
+  );
+  const hashDriftEntries = await readdir(hashDriftStartupDirectory);
+  assert(
+    hashDriftHookCount === 1 &&
+      hashDriftCreateCount === 0 &&
+      hashDriftError.includes("does not match planned content hash") &&
+      !hashDriftEntries.some((name) => /^launcher-[0-9a-f]{16}$/.test(name)),
+    "Source mutation after launcher planning must fail the staged payload hash gate before metadata, canonical publication, or scheduler creation.",
+  );
+
   const concurrentRuntimeRoot = path.join(tempRoot, "concurrent-runtime-home");
   const concurrentOptions = {
     ...options,
@@ -935,7 +1005,13 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     const bothInitialQueries = new Promise((resolve) => {
       releaseInitialQueries = resolve;
     });
+    let createInvocationCount = 0;
+    let releaseCreateInvocations;
+    const bothCreateInvocations = new Promise((resolve) => {
+      releaseCreateInvocations = resolve;
+    });
     const concurrentInvocations = [];
+    const createDefinitionReads = [];
     const concurrentRunner = async (args) => {
       concurrentInvocations.push([...args]);
       if (args[0] === "/Query") {
@@ -960,8 +1036,14 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
             };
       }
       if (args[0] === "/Create") {
+        createInvocationCount += 1;
+        if (createInvocationCount === 2) {
+          releaseCreateInvocations();
+        }
+        await bothCreateInvocations;
         const xmlPath = args[args.indexOf("/XML") + 1];
         const requestedXml = await readFile(xmlPath, "utf8");
+        createDefinitionReads.push({ xmlPath, requestedXml });
         if (concurrentRegisteredXml) {
           return {
             code: 1,
@@ -994,7 +1076,12 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       concurrentBackendA.install(request),
       concurrentBackendB.install(request),
     ]);
-    return { results, concurrentInvocations, concurrentBackendA };
+    return {
+      results,
+      concurrentInvocations,
+      concurrentBackendA,
+      createDefinitionReads,
+    };
   };
 
   const coldConcurrentRound = await runConcurrentEnableRound();
@@ -1023,10 +1110,28 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       ) &&
       (await coldConcurrentRound.concurrentBackendA.inspect()).status ===
         "installed" &&
+      coldConcurrentRound.createDefinitionReads.length === 2 &&
+      new Set(
+        coldConcurrentRound.createDefinitionReads.map(({ xmlPath }) => xmlPath),
+      ).size === 2 &&
+      coldConcurrentRound.createDefinitionReads.every(
+        ({ requestedXml }) =>
+          requestedXml.startsWith("<Task") &&
+          requestedXml.endsWith("</Task>\n"),
+      ) &&
+      (
+        await Promise.all(
+          coldConcurrentRound.createDefinitionReads.map(({ xmlPath }) =>
+            access(xmlPath)
+              .then(() => true)
+              .catch(() => false),
+          ),
+        )
+      ).every((exists) => !exists) &&
       !coldConcurrentRound.concurrentInvocations.some(
         ([command]) => command === "/Delete",
       ),
-    "Two cold concurrent enables must publish one verified launcher and converge on one exact task without deletion.",
+    "Two cold concurrent enables must publish one verified launcher and converge through distinct complete invocation-owned task XML files without deletion.",
   );
 
   const concurrentLauncherDirectory = path.join(
@@ -1583,6 +1688,7 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   let upgradeRollbackXml = v2Definition;
   let upgradeCreateCount = 0;
   const upgradeRollbackInvocations = [];
+  const upgradeDefinitionPaths = [];
   const upgradeRollbackRunner = async (args) => {
     upgradeRollbackInvocations.push([...args]);
     if (args[0] === "/Query") {
@@ -1597,6 +1703,7 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     if (args[0] === "/Create") {
       upgradeCreateCount += 1;
       const xmlPath = args[args.indexOf("/XML") + 1];
+      upgradeDefinitionPaths.push(xmlPath);
       const requestedXml = await readFile(xmlPath, "utf8");
       upgradeRollbackXml =
         upgradeCreateCount === 1
@@ -1627,8 +1734,18 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       ) &&
       upgradeRollbackXml === v2Definition &&
       upgradeCreateCount === 2 &&
+      new Set(upgradeDefinitionPaths).size === 2 &&
+      (
+        await Promise.all(
+          upgradeDefinitionPaths.map((xmlPath) =>
+            access(xmlPath)
+              .then(() => true)
+              .catch(() => false),
+          ),
+        )
+      ).every((exists) => !exists) &&
       !upgradeRollbackInvocations.some(([command]) => command === "/Delete"),
-    "A failed owned-drift upgrade must restore and verify the exact prior v2 definition without deleting it.",
+    "A failed owned-drift upgrade must restore and verify the exact prior v2 definition through a distinct cleaned invocation-owned XML file without deleting it.",
   );
 
   let failedAbsentCreateXml = "";

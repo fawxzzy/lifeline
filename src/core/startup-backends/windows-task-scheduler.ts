@@ -49,6 +49,7 @@ export interface WindowsTaskSchedulerOptions {
   nodeExecutable?: string;
   cliEntrypoint?: string;
   identity?: WindowsStartupIdentity;
+  beforeLauncherSnapshotCopy?: () => Promise<void> | void;
 }
 
 interface LauncherPlan {
@@ -56,8 +57,13 @@ interface LauncherPlan {
   sourceHash: string;
   launcherDirectory: string;
   launcherEntrypoint: string;
-  taskDefinitionPath: string;
-  rollbackDefinitionPath: string;
+  startupDirectory: string;
+  beforeSnapshotCopy?: () => Promise<void> | void;
+}
+
+interface InvocationTaskDefinition {
+  directory: string;
+  path: string;
 }
 
 interface LauncherLease {
@@ -553,6 +559,13 @@ async function launcherSnapshotMatchesAt(
     return false;
   }
 
+  return launcherPayloadMatches(sourceDirectory, launcherDirectory);
+}
+
+async function launcherPayloadMatches(
+  sourceDirectory: string,
+  launcherDirectory: string,
+): Promise<boolean> {
   const sourceFiles = await listLauncherPayloadFiles(sourceDirectory);
   const launcherFiles = await listLauncherPayloadFiles(launcherDirectory).catch(
     () => [],
@@ -797,6 +810,7 @@ function isSameOrDescendantPath(candidate: string, parent: string): boolean {
 async function buildLauncherPlan(
   rootDirectory: string,
   cliEntrypoint: string,
+  beforeSnapshotCopy?: () => Promise<void> | void,
 ): Promise<LauncherPlan> {
   const sourceDirectory = path.dirname(cliEntrypoint);
   if (isSameOrDescendantPath(rootDirectory, sourceDirectory)) {
@@ -844,11 +858,8 @@ async function buildLauncherPlan(
     sourceHash,
     launcherDirectory,
     launcherEntrypoint: path.join(launcherDirectory, "cli.js"),
-    taskDefinitionPath: path.join(startupDirectory, "task-definition.xml"),
-    rollbackDefinitionPath: path.join(
-      startupDirectory,
-      "task-definition.rollback.xml",
-    ),
+    startupDirectory,
+    ...(beforeSnapshotCopy ? { beforeSnapshotCopy } : {}),
   };
 }
 
@@ -919,7 +930,11 @@ async function buildExpectedTaskDefinition(
       fileURLToPath(new URL("../../cli.js", import.meta.url)),
   );
   const identity = options.identity ?? (await resolveCurrentIdentity());
-  const launcher = await buildLauncherPlan(rootDirectory, cliEntrypoint);
+  const launcher = await buildLauncherPlan(
+    rootDirectory,
+    cliEntrypoint,
+    options.beforeLauncherSnapshotCopy,
+  );
 
   if (
     rootDirectory.includes('"') ||
@@ -1133,7 +1148,24 @@ async function ensureLauncherSnapshot(launcher: LauncherPlan): Promise<void> {
   let finalVerified = false;
   let quarantineDirectories: string[] = [];
   try {
+    await launcher.beforeSnapshotCopy?.();
     await copyLauncherPayload(launcher.sourceDirectory, stagingDirectory);
+    const stagedHash = await hashDirectory(stagingDirectory);
+    if (stagedHash !== launcher.sourceHash) {
+      throw new Error(
+        `Stable launcher staging payload hash ${stagedHash} does not match planned content hash ${launcher.sourceHash}; source changed during snapshot materialization.`,
+      );
+    }
+    if (
+      !(await launcherPayloadMatches(
+        launcher.sourceDirectory,
+        stagingDirectory,
+      ))
+    ) {
+      throw new Error(
+        `Stable launcher staging payload no longer matches source bytes at ${launcher.sourceDirectory}; source changed during snapshot materialization.`,
+      );
+    }
     await writeFile(
       path.join(stagingDirectory, "launcher.json"),
       expectedMetadata,
@@ -1144,7 +1176,8 @@ async function ensureLauncherSnapshot(launcher: LauncherPlan): Promise<void> {
         launcher.sourceDirectory,
         stagingDirectory,
         expectedMetadata,
-      ))
+      )) ||
+      (await hashDirectory(stagingDirectory)) !== launcher.sourceHash
     ) {
       throw new Error(
         `Stable launcher staging verification failed at ${stagingDirectory}.`,
@@ -1186,21 +1219,57 @@ function normalizeTaskXmlForComparison(xml: string): string {
     .trim();
 }
 
+async function writeInvocationTaskDefinition(
+  launcher: LauncherPlan,
+  kind: "create" | "rollback",
+  xml: string,
+): Promise<InvocationTaskDefinition> {
+  await mkdir(launcher.startupDirectory, { recursive: true });
+  const directory = await mkdtemp(
+    path.join(launcher.startupDirectory, `.task-${kind}-`),
+  );
+  const definitionPath = path.join(directory, "task.xml");
+  await writeFile(definitionPath, xml, "utf8");
+  if ((await readFile(definitionPath, "utf8")) !== xml) {
+    throw new Error(
+      `Could not verify the invocation-unique ${kind} task definition at ${definitionPath}.`,
+    );
+  }
+  return { directory, path: definitionPath };
+}
+
+async function removeInvocationTaskDefinition(
+  definition: InvocationTaskDefinition,
+): Promise<void> {
+  await rm(definition.directory, { recursive: true, force: true }).catch(
+    () => {},
+  );
+}
+
 async function restorePriorOwnedTaskAfterFailedReadback(
   runner: WindowsSchedulerRunner,
   launcher: LauncherPlan,
   priorXml: string,
 ): Promise<{ verified: boolean; detail: string }> {
   const restorableXml = priorXml.replace(/^\s*<\?xml[^>]*>\s*/i, "");
-  await writeFile(launcher.rollbackDefinitionPath, restorableXml, "utf8");
-  const restoreResult = await runner([
-    "/Create",
-    "/TN",
-    WINDOWS_STARTUP_TASK_NAME,
-    "/XML",
-    launcher.rollbackDefinitionPath,
-    "/F",
-  ]);
+  const definition = await writeInvocationTaskDefinition(
+    launcher,
+    "rollback",
+    restorableXml,
+  );
+  let restoreResult: SchedulerCommandResult;
+  try {
+    restoreResult = await runner([
+      "/Create",
+      "/TN",
+      WINDOWS_STARTUP_TASK_NAME,
+      "/XML",
+      definition.path,
+      "/F",
+    ]);
+  } finally {
+    await removeInvocationTaskDefinition(definition);
+  }
   if (restoreResult.code !== 0) {
     return {
       verified: false,
@@ -1398,13 +1467,10 @@ export function createWindowsTaskSchedulerBackend(
         };
       }
 
-      await mkdir(path.dirname(expected.launcher.taskDefinitionPath), {
-        recursive: true,
-      });
-      await writeFile(
-        expected.launcher.taskDefinitionPath,
+      const definition = await writeInvocationTaskDefinition(
+        expected.launcher,
+        "create",
         expected.xml,
-        "utf8",
       );
 
       const createArgs = [
@@ -1412,10 +1478,15 @@ export function createWindowsTaskSchedulerBackend(
         "/TN",
         WINDOWS_STARTUP_TASK_NAME,
         "/XML",
-        expected.launcher.taskDefinitionPath,
+        definition.path,
         ...(inspection.state === "owned-drift" ? ["/F"] : []),
       ];
-      const createResult = await runner(createArgs);
+      let createResult: SchedulerCommandResult;
+      try {
+        createResult = await runner(createArgs);
+      } finally {
+        await removeInvocationTaskDefinition(definition);
+      }
       if (createResult.code !== 0) {
         const reconciliation = await reconcileFailedTaskCreation(
           runner,
