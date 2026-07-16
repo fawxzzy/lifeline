@@ -3,9 +3,12 @@ import { createHash } from "node:crypto";
 import {
   copyFile,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
-  unlink,
+  rename,
+  rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -23,6 +26,8 @@ const TASK_MECHANISM = "windows-task-scheduler";
 const TASK_AUTHOR = "Lifeline";
 const TASK_URI = `\\${WINDOWS_STARTUP_TASK_NAME}`;
 const TASK_DEFINITION_VERSION = 4;
+const LAUNCHER_LEASE_TIMEOUT_MS = 30_000;
+const LAUNCHER_LEASE_POLL_MS = 50;
 
 interface SchedulerCommandResult {
   code: number;
@@ -51,9 +56,21 @@ interface LauncherPlan {
   sourceHash: string;
   launcherDirectory: string;
   launcherEntrypoint: string;
-  launcherMetadataPath: string;
   taskDefinitionPath: string;
   rollbackDefinitionPath: string;
+}
+
+interface LauncherLease {
+  directory: string;
+  metadataPath: string;
+  ownerId: string;
+}
+
+interface LauncherLeaseRecord {
+  version: 1;
+  ownerId: string;
+  pid: number;
+  startedAt: string;
 }
 
 interface ExpectedTaskDefinition {
@@ -516,18 +533,30 @@ async function launcherSnapshotMatches(
   launcher: LauncherPlan,
   expectedMetadata: string,
 ): Promise<boolean> {
+  return launcherSnapshotMatchesAt(
+    launcher.sourceDirectory,
+    launcher.launcherDirectory,
+    expectedMetadata,
+  );
+}
+
+async function launcherSnapshotMatchesAt(
+  sourceDirectory: string,
+  launcherDirectory: string,
+  expectedMetadata: string,
+): Promise<boolean> {
   const existingMetadata = await readFile(
-    launcher.launcherMetadataPath,
+    path.join(launcherDirectory, "launcher.json"),
     "utf8",
   ).catch(() => "");
   if (existingMetadata !== expectedMetadata) {
     return false;
   }
 
-  const sourceFiles = await listLauncherPayloadFiles(launcher.sourceDirectory);
-  const launcherFiles = await listLauncherPayloadFiles(
-    launcher.launcherDirectory,
-  ).catch(() => []);
+  const sourceFiles = await listLauncherPayloadFiles(sourceDirectory);
+  const launcherFiles = await listLauncherPayloadFiles(launcherDirectory).catch(
+    () => [],
+  );
   if (JSON.stringify(sourceFiles) !== JSON.stringify(launcherFiles)) {
     return false;
   }
@@ -535,14 +564,223 @@ async function launcherSnapshotMatches(
   for (const relativeFile of sourceFiles) {
     if (
       !(await filesHaveSameBytes(
-        path.join(launcher.sourceDirectory, relativeFile),
-        path.join(launcher.launcherDirectory, relativeFile),
+        path.join(sourceDirectory, relativeFile),
+        path.join(launcherDirectory, relativeFile),
       ))
     ) {
       return false;
     }
   }
   return true;
+}
+
+function filesystemErrorCode(error: unknown): string | undefined {
+  return error instanceof Error && "code" in error
+    ? String((error as Error & { code?: unknown }).code)
+    : undefined;
+}
+
+function waitForLauncherFilesystem(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, LAUNCHER_LEASE_POLL_MS);
+  });
+}
+
+function launcherOwnerId(): string {
+  return `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function parseLauncherLeaseRecord(
+  value: string,
+): LauncherLeaseRecord | undefined {
+  try {
+    const parsed = JSON.parse(value) as Partial<LauncherLeaseRecord>;
+    return parsed.version === 1 &&
+      typeof parsed.ownerId === "string" &&
+      typeof parsed.pid === "number" &&
+      typeof parsed.startedAt === "string"
+      ? (parsed as LauncherLeaseRecord)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (pid === process.pid) {
+    return true;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function acquireLauncherLease(
+  launcher: LauncherPlan,
+  expectedMetadata: string,
+): Promise<LauncherLease | undefined> {
+  const directory = `${launcher.launcherDirectory}.materialize.lock`;
+  const metadataPath = path.join(directory, "owner.json");
+  const ownerId = launcherOwnerId();
+  const deadline = Date.now() + LAUNCHER_LEASE_TIMEOUT_MS;
+
+  while (Date.now() <= deadline) {
+    if (await launcherSnapshotMatches(launcher, expectedMetadata)) {
+      return undefined;
+    }
+
+    try {
+      await mkdir(directory);
+      const record: LauncherLeaseRecord = {
+        version: 1,
+        ownerId,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+      };
+      try {
+        await writeFile(
+          metadataPath,
+          `${JSON.stringify(record, null, 2)}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        await rm(directory, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
+      return { directory, metadataPath, ownerId };
+    } catch (error) {
+      if (filesystemErrorCode(error) !== "EEXIST") {
+        throw error;
+      }
+    }
+
+    if (await launcherSnapshotMatches(launcher, expectedMetadata)) {
+      return undefined;
+    }
+
+    const [recordText, leaseStats] = await Promise.all([
+      readFile(metadataPath, "utf8").catch(() => ""),
+      stat(directory).catch(() => undefined),
+    ]);
+    const record = parseLauncherLeaseRecord(recordText);
+    const uninitializedLeaseExpired =
+      !record &&
+      leaseStats !== undefined &&
+      Date.now() - leaseStats.mtimeMs >= LAUNCHER_LEASE_TIMEOUT_MS;
+    if ((record && !isProcessAlive(record.pid)) || uninitializedLeaseExpired) {
+      const staleDirectory = `${directory}.stale-${ownerId}`;
+      try {
+        await rename(directory, staleDirectory);
+        await rm(staleDirectory, { recursive: true, force: true });
+        continue;
+      } catch (error) {
+        if (
+          ![
+            "ENOENT",
+            "EEXIST",
+            "ENOTEMPTY",
+            "EPERM",
+            "EACCES",
+            "EBUSY",
+          ].includes(filesystemErrorCode(error) ?? "")
+        ) {
+          throw error;
+        }
+      }
+    }
+
+    await waitForLauncherFilesystem();
+  }
+
+  throw new Error(
+    `Timed out waiting for stable launcher materialization at ${launcher.launcherDirectory}; the active lease was preserved for fail-closed recovery.`,
+  );
+}
+
+async function releaseLauncherLease(lease: LauncherLease): Promise<void> {
+  const record = parseLauncherLeaseRecord(
+    await readFile(lease.metadataPath, "utf8").catch(() => ""),
+  );
+  if (record?.ownerId !== lease.ownerId) {
+    return;
+  }
+  const releaseDirectory = `${lease.directory}.release-${lease.ownerId}`;
+  try {
+    await rename(lease.directory, releaseDirectory);
+    await rm(releaseDirectory, { recursive: true, force: true });
+  } catch (error) {
+    if (filesystemErrorCode(error) !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function publishLauncherStaging(
+  launcher: LauncherPlan,
+  stagingDirectory: string,
+  expectedMetadata: string,
+): Promise<string[]> {
+  const quarantineDirectories: string[] = [];
+  const deadline = Date.now() + LAUNCHER_LEASE_TIMEOUT_MS;
+  let canonicalClaimed = false;
+
+  while (Date.now() <= deadline) {
+    if (await launcherSnapshotMatches(launcher, expectedMetadata)) {
+      return quarantineDirectories;
+    }
+
+    if (!canonicalClaimed) {
+      const quarantineDirectory = `${launcher.launcherDirectory}.quarantine-${launcherOwnerId()}`;
+      try {
+        await rename(launcher.launcherDirectory, quarantineDirectory);
+        quarantineDirectories.push(quarantineDirectory);
+        canonicalClaimed = true;
+      } catch (error) {
+        const code = filesystemErrorCode(error);
+        if (code === "ENOENT") {
+          canonicalClaimed = true;
+        } else if (
+          !["EEXIST", "ENOTEMPTY", "EPERM", "EACCES", "EBUSY"].includes(
+            code ?? "",
+          )
+        ) {
+          throw error;
+        }
+      }
+      if (!canonicalClaimed) {
+        await waitForLauncherFilesystem();
+        continue;
+      }
+    }
+
+    try {
+      await rename(stagingDirectory, launcher.launcherDirectory);
+    } catch (error) {
+      if (
+        !["EEXIST", "ENOTEMPTY", "EPERM", "EACCES", "EBUSY"].includes(
+          filesystemErrorCode(error) ?? "",
+        )
+      ) {
+        throw error;
+      }
+      await waitForLauncherFilesystem();
+      continue;
+    }
+
+    if (await launcherSnapshotMatches(launcher, expectedMetadata)) {
+      return quarantineDirectories;
+    }
+    throw new Error(
+      `Published stable launcher snapshot did not match source bytes at ${launcher.launcherDirectory}.`,
+    );
+  }
+
+  throw new Error(
+    `Timed out publishing the verified stable launcher snapshot at ${launcher.launcherDirectory}; the canonical target remained invalid or ambiguous.`,
+  );
 }
 
 function isSameOrDescendantPath(candidate: string, parent: string): boolean {
@@ -606,7 +844,6 @@ async function buildLauncherPlan(
     sourceHash,
     launcherDirectory,
     launcherEntrypoint: path.join(launcherDirectory, "cli.js"),
-    launcherMetadataPath: path.join(launcherDirectory, "launcher.json"),
     taskDefinitionPath: path.join(startupDirectory, "task-definition.xml"),
     rollbackDefinitionPath: path.join(
       startupDirectory,
@@ -888,24 +1125,56 @@ async function ensureLauncherSnapshot(launcher: LauncherPlan): Promise<void> {
     );
   }
 
-  await copyLauncherPayload(
-    launcher.sourceDirectory,
-    launcher.launcherDirectory,
+  await mkdir(path.dirname(launcher.launcherDirectory), { recursive: true });
+  const stagingDirectory = await mkdtemp(
+    `${launcher.launcherDirectory}.staging-`,
   );
-  const sourceFileSet = new Set(
-    await listLauncherPayloadFiles(launcher.sourceDirectory),
-  );
-  const launcherFiles = await listRelativeFiles(launcher.launcherDirectory);
-  for (const relativeFile of launcherFiles) {
-    if (relativeFile !== "launcher.json" && !sourceFileSet.has(relativeFile)) {
-      await unlink(path.join(launcher.launcherDirectory, relativeFile));
-    }
-  }
-  await writeFile(launcher.launcherMetadataPath, expectedMetadata, "utf8");
-  if (!(await launcherSnapshotMatches(launcher, expectedMetadata))) {
-    throw new Error(
-      `Stable launcher snapshot verification failed at ${launcher.launcherDirectory}.`,
+  let lease: LauncherLease | undefined;
+  let finalVerified = false;
+  let quarantineDirectories: string[] = [];
+  try {
+    await copyLauncherPayload(launcher.sourceDirectory, stagingDirectory);
+    await writeFile(
+      path.join(stagingDirectory, "launcher.json"),
+      expectedMetadata,
+      "utf8",
     );
+    if (
+      !(await launcherSnapshotMatchesAt(
+        launcher.sourceDirectory,
+        stagingDirectory,
+        expectedMetadata,
+      ))
+    ) {
+      throw new Error(
+        `Stable launcher staging verification failed at ${stagingDirectory}.`,
+      );
+    }
+
+    lease = await acquireLauncherLease(launcher, expectedMetadata);
+    if (lease) {
+      quarantineDirectories = await publishLauncherStaging(
+        launcher,
+        stagingDirectory,
+        expectedMetadata,
+      );
+    }
+    finalVerified = await launcherSnapshotMatches(launcher, expectedMetadata);
+    if (!finalVerified) {
+      throw new Error(
+        `Stable launcher snapshot verification failed at ${launcher.launcherDirectory}.`,
+      );
+    }
+  } finally {
+    if (lease) {
+      await releaseLauncherLease(lease);
+    }
+    if (finalVerified) {
+      await rm(stagingDirectory, { recursive: true, force: true });
+      for (const quarantineDirectory of quarantineDirectories) {
+        await rm(quarantineDirectory, { recursive: true, force: true });
+      }
+    }
   }
 }
 

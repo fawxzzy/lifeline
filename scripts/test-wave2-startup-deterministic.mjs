@@ -923,6 +923,193 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "Windows startup dry-run must not create launcher or state paths.",
   );
 
+  const concurrentRuntimeRoot = path.join(tempRoot, "concurrent-runtime-home");
+  const concurrentOptions = {
+    ...options,
+    rootDirectory: concurrentRuntimeRoot,
+  };
+  let concurrentRegisteredXml = "";
+  const runConcurrentEnableRound = async () => {
+    let initialQueryCount = 0;
+    let releaseInitialQueries;
+    const bothInitialQueries = new Promise((resolve) => {
+      releaseInitialQueries = resolve;
+    });
+    const concurrentInvocations = [];
+    const concurrentRunner = async (args) => {
+      concurrentInvocations.push([...args]);
+      if (args[0] === "/Query") {
+        if (!concurrentRegisteredXml && initialQueryCount < 2) {
+          initialQueryCount += 1;
+          if (initialQueryCount === 2) {
+            releaseInitialQueries();
+          }
+          await bothInitialQueries;
+          return {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+        }
+        return concurrentRegisteredXml
+          ? { code: 0, stdout: concurrentRegisteredXml, stderr: "" }
+          : {
+              code: 1,
+              stdout: "",
+              stderr: "ERROR: The system cannot find the file specified.",
+            };
+      }
+      if (args[0] === "/Create") {
+        const xmlPath = args[args.indexOf("/XML") + 1];
+        const requestedXml = await readFile(xmlPath, "utf8");
+        if (concurrentRegisteredXml) {
+          return {
+            code: 1,
+            stdout: "",
+            stderr:
+              "ERROR: Cannot create a file when that file already exists.",
+          };
+        }
+        concurrentRegisteredXml = requestedXml;
+        return { code: 0, stdout: "SUCCESS", stderr: "" };
+      }
+      if (args[0] === "/Delete") {
+        throw new Error(
+          "Concurrent enable must never delete the winning task.",
+        );
+      }
+      throw new Error(
+        `Unexpected concurrent schtasks fixture call: ${args.join(" ")}`,
+      );
+    };
+    const concurrentBackendA = createWindowsTaskSchedulerBackend(
+      concurrentRunner,
+      concurrentOptions,
+    );
+    const concurrentBackendB = createWindowsTaskSchedulerBackend(
+      concurrentRunner,
+      concurrentOptions,
+    );
+    const results = await Promise.all([
+      concurrentBackendA.install(request),
+      concurrentBackendB.install(request),
+    ]);
+    return { results, concurrentInvocations, concurrentBackendA };
+  };
+
+  const coldConcurrentRound = await runConcurrentEnableRound();
+  const concurrentStartupDirectory = path.join(
+    concurrentRuntimeRoot,
+    ".lifeline",
+    "startup",
+    "windows",
+  );
+  const coldStartupEntries = await readdir(concurrentStartupDirectory);
+  const concurrentLauncherName = coldStartupEntries.find((name) =>
+    /^launcher-[0-9a-f]{16}$/.test(name),
+  );
+  assert(
+    coldConcurrentRound.results.every(
+      (result) => result.status === "installed" && result.ok !== false,
+    ) &&
+      coldConcurrentRound.results.some((result) =>
+        result.detail.includes("enable converged"),
+      ) &&
+      concurrentLauncherName &&
+      coldStartupEntries.filter((name) => /^launcher-[0-9a-f]{16}$/.test(name))
+        .length === 1 &&
+      !coldStartupEntries.some((name) =>
+        /\.(?:staging|quarantine|materialize\.lock)-?/.test(name),
+      ) &&
+      (await coldConcurrentRound.concurrentBackendA.inspect()).status ===
+        "installed" &&
+      !coldConcurrentRound.concurrentInvocations.some(
+        ([command]) => command === "/Delete",
+      ),
+    "Two cold concurrent enables must publish one verified launcher and converge on one exact task without deletion.",
+  );
+
+  const concurrentLauncherDirectory = path.join(
+    concurrentStartupDirectory,
+    concurrentLauncherName,
+  );
+  const concurrentSupportPath = path.join(
+    concurrentLauncherDirectory,
+    "support.js",
+  );
+  const concurrentMetadataPath = path.join(
+    concurrentLauncherDirectory,
+    "launcher.json",
+  );
+  const concurrentMetadata = await readFile(concurrentMetadataPath, "utf8");
+  await writeFile(
+    concurrentSupportPath,
+    "export const fixture = 'corrupt';\n",
+    "utf8",
+  );
+  concurrentRegisteredXml = "";
+  const concurrentRepairRound = await runConcurrentEnableRound();
+  const repairStartupEntries = await readdir(concurrentStartupDirectory);
+  assert(
+    concurrentRepairRound.results.every(
+      (result) => result.status === "installed" && result.ok !== false,
+    ) &&
+      (await readFile(concurrentSupportPath, "utf8")) ===
+        (await readFile(path.join(sourceDirectory, "support.js"), "utf8")) &&
+      (await readFile(concurrentMetadataPath, "utf8")) === concurrentMetadata &&
+      !repairStartupEntries.some((name) =>
+        /\.(?:staging|quarantine|materialize\.lock)-?/.test(name),
+      ) &&
+      !concurrentRepairRound.concurrentInvocations.some(
+        ([command]) => command === "/Delete",
+      ),
+    "Concurrent repair must quarantine the invalid final snapshot, atomically republish exact bytes, and let the loser accept the verified winner.",
+  );
+
+  await writeFile(
+    concurrentSupportPath,
+    "export const fixture = 'crash-residue';\n",
+    "utf8",
+  );
+  const abandonedLeaseDirectory = `${concurrentLauncherDirectory}.materialize.lock`;
+  await mkdir(abandonedLeaseDirectory);
+  await writeFile(
+    path.join(abandonedLeaseDirectory, "owner.json"),
+    `${JSON.stringify(
+      {
+        version: 1,
+        ownerId: "dead-publisher",
+        pid: 2_147_483_647,
+        startedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  const abandonedLeaseRecovery = await createWindowsTaskSchedulerBackend(
+    async (args) => {
+      if (args[0] === "/Query") {
+        return { code: 0, stdout: concurrentRegisteredXml, stderr: "" };
+      }
+      throw new Error(
+        `Unexpected abandoned-lease fixture call: ${args.join(" ")}`,
+      );
+    },
+    concurrentOptions,
+  ).install(request);
+  const recoveryStartupEntries = await readdir(concurrentStartupDirectory);
+  assert(
+    abandonedLeaseRecovery.status === "installed" &&
+      abandonedLeaseRecovery.ok !== false &&
+      (await readFile(concurrentSupportPath, "utf8")) ===
+        (await readFile(path.join(sourceDirectory, "support.js"), "utf8")) &&
+      !recoveryStartupEntries.some((name) =>
+        /\.(?:staging|quarantine|materialize\.lock)-?/.test(name),
+      ),
+    "A dead publisher lease plus invalid canonical snapshot must be reclaimed and repaired without accepting partial bytes or leaving owned staging/quarantine residue.",
+  );
+
   const installResult = await backend.install(request);
   assert(
     installResult.status === "installed" && installResult.ok !== false,

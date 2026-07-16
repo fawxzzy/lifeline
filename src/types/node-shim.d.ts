@@ -17,6 +17,12 @@ declare module "node:fs/promises" {
     path: string,
     options?: { recursive?: boolean },
   ): Promise<void>;
+  export function mkdtemp(prefix: string): Promise<string>;
+  export function rename(oldPath: string, newPath: string): Promise<void>;
+  export function rm(
+    path: string,
+    options?: { recursive?: boolean; force?: boolean },
+  ): Promise<void>;
   export function access(path: string): Promise<void>;
   export function unlink(path: string): Promise<void>;
   export function open(
@@ -43,6 +49,7 @@ declare module "node:fs/promises" {
   export function readlink(path: string): Promise<string>;
   export function stat(path: string): Promise<{
     size: number;
+    mtimeMs: number;
     isDirectory(): boolean;
     isFile(): boolean;
   }>;
