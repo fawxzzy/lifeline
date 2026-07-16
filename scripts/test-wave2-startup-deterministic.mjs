@@ -1,5 +1,5 @@
-import { access, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { access, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,22 +40,28 @@ async function verifyRestoreEntrypointWiring() {
 
   assert(
     cliSource.includes("lifeline [--root <path>] restore [--startup]") &&
-      cliSource.includes('runRestoreCommand({ startup: target === "--startup" })'),
+      cliSource.includes(
+        'runRestoreCommand({ startup: target === "--startup" })',
+      ),
     "Expected CLI usage output to keep the restore command discoverable.",
   );
 
   await ensureBuiltCli();
   const {
+    cleanupPartialStartupRestore,
     getStartupRestoreTerminalFailure,
+    holdStartupRestoreWrapper,
     isPersistedStatusEligibleForRestore,
-  } = await import(
-    new URL("../dist/commands/restore.js", import.meta.url)
-  );
+    monitorStartupRestore,
+  } = await import(new URL("../dist/commands/restore.js", import.meta.url));
   assert(
     isPersistedStatusEligibleForRestore("stopped") === false &&
-      isPersistedStatusEligibleForRestore("stopped", { startup: true }) === true &&
-      isPersistedStatusEligibleForRestore("blocked", { startup: true }) === false &&
-      isPersistedStatusEligibleForRestore("crash-loop", { startup: true }) === false,
+      isPersistedStatusEligibleForRestore("stopped", { startup: true }) ===
+        true &&
+      isPersistedStatusEligibleForRestore("blocked", { startup: true }) ===
+        false &&
+      isPersistedStatusEligibleForRestore("crash-loop", { startup: true }) ===
+        false,
     "Expected startup restore mode to include stopped apps without reviving blocked/crash-loop apps or changing ordinary restore semantics.",
   );
 
@@ -77,26 +83,22 @@ async function verifyRestoreEntrypointWiring() {
     crashLoopDetected: false,
   };
   assert(
-    getStartupRestoreTerminalFailure(
-      [restored],
-      { apps: { playbook: stoppedByDown } },
-    ) === undefined,
+    getStartupRestoreTerminalFailure([restored], {
+      apps: { playbook: stoppedByDown },
+    }) === undefined,
     "Expected normal lifeline down terminal state to let the startup wrapper succeed.",
   );
   assert(
-    getStartupRestoreTerminalFailure(
-      [restored],
-      {
-        apps: {
-          playbook: {
-            ...stoppedByDown,
-            childPid: 4200,
-            lastKnownStatus: "running",
-            lastExitAt: undefined,
-          },
+    getStartupRestoreTerminalFailure([restored], {
+      apps: {
+        playbook: {
+          ...stoppedByDown,
+          childPid: 4200,
+          lastKnownStatus: "running",
+          lastExitAt: undefined,
         },
       },
-    )?.includes("persisted status is running"),
+    })?.includes("persisted status is running"),
     "Expected unexpected supervisor disappearance with stale running state to fail closed.",
   );
   assert(
@@ -106,22 +108,202 @@ async function verifyRestoreEntrypointWiring() {
     "Expected missing restored-app state to fail closed.",
   );
   assert(
-    getStartupRestoreTerminalFailure(
-      [restored],
-      {
-        apps: {
-          playbook: { ...stoppedByDown, supervisorPid: 4101 },
-        },
+    getStartupRestoreTerminalFailure([restored], {
+      apps: {
+        playbook: { ...stoppedByDown, supervisorPid: 4101 },
       },
-    )?.includes("supervisor identity changed"),
+    })?.includes("supervisor identity changed"),
     "Expected terminal state for a different supervisor identity to fail closed.",
   );
   assert(
-    getStartupRestoreTerminalFailure(
-      [restored],
-      { apps: { playbook: { ...stoppedByDown, lastExitAt: undefined } } },
-    )?.includes("lacks a terminal timestamp"),
+    getStartupRestoreTerminalFailure([restored], {
+      apps: { playbook: { ...stoppedByDown, lastExitAt: undefined } },
+    })?.includes("lacks a terminal timestamp"),
     "Expected stale stopped state without a terminal transition for this restore to fail closed.",
+  );
+
+  let staleAllDeadClock = 0;
+  let staleAllDeadWaits = 0;
+  const staleAllDeadFailure = await holdStartupRestoreWrapper([restored], {
+    processAlive: async () => false,
+    readRuntimeState: async () => ({
+      apps: {
+        playbook: {
+          ...stoppedByDown,
+          childPid: 4200,
+          lastKnownStatus: "running",
+          lastExitAt: undefined,
+        },
+      },
+    }),
+    now: () => staleAllDeadClock,
+    wait: async (ms) => {
+      staleAllDeadWaits += 1;
+      staleAllDeadClock += ms;
+    },
+  });
+  assert(
+    staleAllDeadFailure?.includes("persisted status is running") &&
+      staleAllDeadClock >= 2_000 &&
+      staleAllDeadWaits >= 4,
+    "An all-dead invocation with stale running state must poll through terminal grace and fail instead of returning clean success.",
+  );
+
+  const partialRestores = [
+    {
+      name: "first-success",
+      supervisorPid: 5100,
+      startedAt: "2026-07-15T12:00:00.000Z",
+    },
+    {
+      name: "second-success-before-later-failure",
+      supervisorPid: 5200,
+      startedAt: "2026-07-15T12:00:01.000Z",
+    },
+  ];
+  const partialAlive = new Set(partialRestores.map((app) => app.supervisorPid));
+  const partialState = {
+    apps: Object.fromEntries(
+      partialRestores.map((app) => [
+        app.name,
+        {
+          name: app.name,
+          supervisorPid: app.supervisorPid,
+          childPid: app.supervisorPid + 100,
+          wrapperPid: app.supervisorPid + 200,
+          listenerPid: app.supervisorPid + 100,
+          portOwnerPid: app.supervisorPid + 100,
+          lastKnownStatus: "running",
+          blockedReason: undefined,
+          crashLoopDetected: false,
+        },
+      ]),
+    ),
+  };
+  const partialDownCalls = [];
+  const partialCleanupFailure = await cleanupPartialStartupRestore(
+    partialRestores,
+    {
+      downApp: async (name) => {
+        partialDownCalls.push(name);
+        const restoredApp = partialRestores.find((app) => app.name === name);
+        partialAlive.delete(restoredApp.supervisorPid);
+        partialState.apps[name] = {
+          ...partialState.apps[name],
+          supervisorPid: restoredApp.supervisorPid,
+          childPid: undefined,
+          wrapperPid: undefined,
+          listenerPid: undefined,
+          portOwnerPid: undefined,
+          lastKnownStatus: "stopped",
+          lastExitAt: "2026-07-15T12:00:10.000Z",
+          blockedReason: undefined,
+          crashLoopDetected: false,
+        };
+        return 0;
+      },
+      processAlive: async (pid) => partialAlive.has(pid),
+      readRuntimeState: async () => partialState,
+      stopSupervisor: async (pid) => {
+        partialAlive.delete(pid);
+      },
+      wait: async () => undefined,
+    },
+  );
+  assert(
+    partialCleanupFailure === undefined &&
+      JSON.stringify(partialDownCalls) ===
+        JSON.stringify([
+          "second-success-before-later-failure",
+          "first-success",
+        ]) &&
+      partialAlive.size === 0 &&
+      Object.values(partialState.apps).every(
+        (app) =>
+          app.lastKnownStatus === "stopped" &&
+          app.childPid === undefined &&
+          app.wrapperPid === undefined &&
+          app.listenerPid === undefined &&
+          app.portOwnerPid === undefined,
+      ),
+    "A later startup failure must clean and terminally verify every supervisor already started by the same multi-app invocation.",
+  );
+
+  const earlyFailureRestores = [
+    {
+      name: "early-failure",
+      supervisorPid: 6100,
+      startedAt: "2026-07-15T12:00:00.000Z",
+    },
+    {
+      name: "still-running",
+      supervisorPid: 6200,
+      startedAt: "2026-07-15T12:00:00.000Z",
+    },
+  ];
+  const earlyFailureAlive = new Set([6200]);
+  const earlyFailureState = {
+    apps: {
+      "early-failure": {
+        name: "early-failure",
+        supervisorPid: 6100,
+        lastKnownStatus: "blocked",
+        blockedReason: "fixture failure",
+        crashLoopDetected: false,
+      },
+      "still-running": {
+        name: "still-running",
+        supervisorPid: 6200,
+        childPid: 6201,
+        wrapperPid: 6202,
+        listenerPid: 6201,
+        portOwnerPid: 6201,
+        lastKnownStatus: "running",
+        blockedReason: undefined,
+        crashLoopDetected: false,
+      },
+    },
+  };
+  const earlyFailureDownCalls = [];
+  const monitoredFailure = await monitorStartupRestore(earlyFailureRestores, {
+    downApp: async (name) => {
+      earlyFailureDownCalls.push(name);
+      const restoredApp = earlyFailureRestores.find((app) => app.name === name);
+      earlyFailureAlive.delete(restoredApp.supervisorPid);
+      earlyFailureState.apps[name] = {
+        ...earlyFailureState.apps[name],
+        supervisorPid: restoredApp.supervisorPid,
+        childPid: undefined,
+        wrapperPid: undefined,
+        listenerPid: undefined,
+        portOwnerPid: undefined,
+        lastKnownStatus: "stopped",
+        lastExitAt: "2026-07-15T12:00:10.000Z",
+        blockedReason: undefined,
+        crashLoopDetected: false,
+      };
+      return 0;
+    },
+    processAlive: async (pid) => earlyFailureAlive.has(pid),
+    readRuntimeState: async () => earlyFailureState,
+    stopSupervisor: async (pid) => {
+      earlyFailureAlive.delete(pid);
+    },
+    wait: async () => undefined,
+  });
+  assert(
+    monitoredFailure?.includes("entered blocked") &&
+      monitoredFailure.includes("all supervisors started") &&
+      earlyFailureAlive.size === 0 &&
+      earlyFailureDownCalls.length === 2 &&
+      Object.values(earlyFailureState.apps).every(
+        (app) =>
+          app.lastKnownStatus === "stopped" &&
+          app.supervisorPid !== undefined &&
+          app.childPid === undefined &&
+          app.wrapperPid === undefined,
+      ),
+    "An early failed supervisor must end the hold, clean a second still-running supervisor, and verify the entire invocation stopped.",
   );
 }
 
@@ -172,6 +354,8 @@ async function verifyContractSurfaceWiring() {
 
   assert(
     restoreCommandSource.includes("holdStartupRestoreWrapper") &&
+      restoreCommandSource.includes("monitorStartupRestore") &&
+      restoreCommandSource.includes("cleanupPartialStartupRestore") &&
       restoreCommandSource.includes("startDetachedExecutable") &&
       restoreCommandSource.includes("restoredSupervisorPids"),
     "Expected startup restore mode to launch the exact supervisor directly and keep the scheduler action alive while it runs.",
@@ -582,7 +766,9 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       registeredXml.includes("S-1-5-21-111-222-333-1001") &&
       registeredXml.includes("<LogonType>InteractiveToken</LogonType>") &&
       registeredXml.includes("<RunLevel>LeastPrivilege</RunLevel>") &&
-      registeredXml.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"),
+      registeredXml.includes(
+        "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+      ),
     `Expected exact current-user/least-privilege logon definition.\n${registeredXml}`,
   );
   assert(
@@ -610,6 +796,25 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "Repeated Windows startup enable must preserve the exact definition without creating a duplicate.",
   );
 
+  const schedulerCanonicalDefinition = firstDefinition
+    .replace("      <Enabled>true</Enabled>\n", "")
+    .replace("      <RunLevel>LeastPrivilege</RunLevel>\n", "");
+  registeredXml = schedulerCanonicalDefinition;
+  const createsBeforeCanonicalizedReadback = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const canonicalizedInspection = await backend.inspect();
+  const canonicalizedReenable = await backend.install(request);
+  assert(
+    canonicalizedInspection.status === "installed" &&
+      canonicalizedReenable.status === "installed" &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeCanonicalizedReadback &&
+      registeredXml === schedulerCanonicalDefinition,
+    "Scheduler omission of declared true/least-privilege defaults must remain exact acceptance without allowing unknown trigger/principal structure.",
+  );
+  registeredXml = firstDefinition;
+
   const startupDirectory = path.join(
     runtimeRoot,
     ".lifeline",
@@ -628,8 +833,16 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   const launcherSupportPath = path.join(launcherDirectory, "support.js");
   const unexpectedLauncherPath = path.join(launcherDirectory, "unexpected.js");
   const metadataBeforeCorruption = await readFile(launcherMetadataPath, "utf8");
-  await writeFile(launcherSupportPath, "export const fixture = false;\n", "utf8");
-  await writeFile(unexpectedLauncherPath, "throw new Error('foreign');\n", "utf8");
+  await writeFile(
+    launcherSupportPath,
+    "export const fixture = false;\n",
+    "utf8",
+  );
+  await writeFile(
+    unexpectedLauncherPath,
+    "throw new Error('foreign');\n",
+    "utf8",
+  );
   assert(
     (await readFile(launcherMetadataPath, "utf8")) === metadataBeforeCorruption,
     "Launcher corruption fixture must retain the trusted-looking metadata.",
@@ -655,13 +868,13 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   );
 
   registeredXml = registeredXml.replace(
-    "<RunLevel>LeastPrivilege</RunLevel>",
-    "<RunLevel>HighestAvailable</RunLevel>",
+    "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+    "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>",
   );
   const reconcileResult = await backend.install(request);
-  const reconcileCreate = invocations.filter(
-    ([command]) => command === "/Create",
-  ).at(-1);
+  const reconcileCreate = invocations
+    .filter(([command]) => command === "/Create")
+    .at(-1);
   assert(
     reconcileResult.status === "installed" &&
       reconcileCreate?.includes("/F") &&
@@ -741,6 +954,34 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     "A same-root task with a second action must be rejected without overwrite or removal.",
   );
 
+  registeredXml = firstDefinition.replace(
+    "  </Triggers>",
+    `    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>`,
+  );
+  const createsBeforeExtraTrigger = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const deletesBeforeExtraTrigger = invocations.filter(
+    ([command]) => command === "/Delete",
+  ).length;
+  const extraTriggerInspection = await backend.inspect();
+  const extraTriggerInstall = await backend.install(request);
+  const extraTriggerUninstall = await backend.uninstall(request);
+  assert(
+    extraTriggerInspection.status === "not-installed" &&
+      extraTriggerInstall.ok === false &&
+      extraTriggerUninstall.ok === false &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeExtraTrigger &&
+      invocations.filter(([command]) => command === "/Delete").length ===
+        deletesBeforeExtraTrigger &&
+      registeredXml.includes("<BootTrigger>"),
+    "A current-v4 task with an additional trigger must fail status acceptance, enable, and disable without mutation.",
+  );
+
   const v3Definition = firstDefinition.replace(
     "Windows startup v4.",
     "Windows startup v3.",
@@ -748,14 +989,43 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   registeredXml = v3Definition;
   const v3UpgradeResult = await backend.install(request);
   assert(
-    v3UpgradeResult.status === "installed" &&
-      registeredXml === firstDefinition,
+    v3UpgradeResult.status === "installed" && registeredXml === firstDefinition,
     "A recognized same-current-user v3 task must remain upgradeable to the exact v4 definition.",
   );
 
   const v2Definition = firstDefinition
     .replace("Windows startup v4.", "Windows startup v2.")
     .replace(" restore --startup</Arguments>", " restore</Arguments>");
+  registeredXml = v2Definition.replace(
+    "  </Principals>",
+    `    <Principal id="Foreign">
+      <UserId>S-1-5-21-111-222-333-1001</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>`,
+  );
+  const createsBeforeExtraPrincipal = invocations.filter(
+    ([command]) => command === "/Create",
+  ).length;
+  const deletesBeforeExtraPrincipal = invocations.filter(
+    ([command]) => command === "/Delete",
+  ).length;
+  const extraPrincipalInspection = await backend.inspect();
+  const extraPrincipalInstall = await backend.install(request);
+  const extraPrincipalUninstall = await backend.uninstall(request);
+  assert(
+    extraPrincipalInspection.status === "not-installed" &&
+      extraPrincipalInstall.ok === false &&
+      extraPrincipalUninstall.ok === false &&
+      invocations.filter(([command]) => command === "/Create").length ===
+        createsBeforeExtraPrincipal &&
+      invocations.filter(([command]) => command === "/Delete").length ===
+        deletesBeforeExtraPrincipal &&
+      registeredXml.includes('id="Foreign"'),
+    "A legacy owned-looking task with an additional principal must classify conflict for status, enable, and disable.",
+  );
+
   registeredXml = v2Definition;
   const v2UpgradeResult = await backend.install(request);
   assert(
@@ -866,8 +1136,37 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
   registeredXml = firstDefinition;
   const uninstallResult = await backend.uninstall(request);
   assert(
-    uninstallResult.status === "not-installed" && registeredXml === "",
-    "Exact Lifeline-owned Windows task must remain removable through the backend.",
+    uninstallResult.status === "not-installed" &&
+      registeredXml === "" &&
+      uninstallResult.detail.includes("verified its absence"),
+    "Exact Lifeline-owned Windows task removal must query and verify absence.",
+  );
+
+  const stickyDeleteXml = firstDefinition;
+  const stickyDeleteInvocations = [];
+  const stickyDeleteRunner = async (args) => {
+    stickyDeleteInvocations.push([...args]);
+    if (args[0] === "/Query") {
+      return { code: 0, stdout: stickyDeleteXml, stderr: "" };
+    }
+    if (args[0] === "/Delete") {
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    throw new Error(`Unexpected sticky-delete fixture call: ${args.join(" ")}`);
+  };
+  const stickyDeleteBackend = createWindowsTaskSchedulerBackend(
+    stickyDeleteRunner,
+    options,
+  );
+  const stickyDeleteResult = await stickyDeleteBackend.uninstall(request);
+  assert(
+    stickyDeleteResult.ok === false &&
+      stickyDeleteResult.status === "installed" &&
+      stickyDeleteResult.detail.includes("still present") &&
+      stickyDeleteXml === firstDefinition &&
+      stickyDeleteInvocations.filter(([command]) => command === "/Query")
+        .length === 2,
+    "A successful scheduler delete response must fail closed when exact readback still finds the task.",
   );
 
   let rollbackXml = "";
@@ -886,8 +1185,8 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     if (args[0] === "/Create") {
       const xmlPath = args[args.indexOf("/XML") + 1];
       rollbackXml = (await readFile(xmlPath, "utf8")).replace(
-        " restore --startup</Arguments>",
-        " status</Arguments>",
+        "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+        "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>",
       );
       return { code: 0, stdout: "SUCCESS", stderr: "" };
     }
@@ -961,6 +1260,126 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       upgradeCreateCount === 2 &&
       !upgradeRollbackInvocations.some(([command]) => command === "/Delete"),
     "A failed owned-drift upgrade must restore and verify the exact prior v2 definition without deleting it.",
+  );
+
+  let failedAbsentCreateXml = "";
+  const failedAbsentCreateInvocations = [];
+  const failedAbsentCreateRunner = async (args) => {
+    failedAbsentCreateInvocations.push([...args]);
+    if (args[0] === "/Query") {
+      return failedAbsentCreateXml
+        ? { code: 0, stdout: failedAbsentCreateXml, stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+    }
+    if (args[0] === "/Create") {
+      const xmlPath = args[args.indexOf("/XML") + 1];
+      failedAbsentCreateXml = await readFile(xmlPath, "utf8");
+      return {
+        code: 1,
+        stdout: "",
+        stderr: "fixture ambiguous create failure",
+      };
+    }
+    if (args[0] === "/Delete") {
+      failedAbsentCreateXml = "";
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    throw new Error(
+      `Unexpected failed-absent-create fixture call: ${args.join(" ")}`,
+    );
+  };
+  const failedAbsentCreateBackend = createWindowsTaskSchedulerBackend(
+    failedAbsentCreateRunner,
+    options,
+  );
+  const failedAbsentCreateResult =
+    await failedAbsentCreateBackend.install(request);
+  assert(
+    failedAbsentCreateResult.ok === false &&
+      failedAbsentCreateResult.status === "not-installed" &&
+      failedAbsentCreateResult.detail.includes("absence was verified") &&
+      failedAbsentCreateXml === "" &&
+      failedAbsentCreateInvocations.some(([command]) => command === "/Delete"),
+    "A nonzero create that leaves a new expected task must remove only that packet-owned task and verify absence.",
+  );
+
+  let failedUpgradeChangedXml = v2Definition;
+  let failedUpgradeChangedCreates = 0;
+  const failedUpgradeChangedRunner = async (args) => {
+    if (args[0] === "/Query") {
+      return { code: 0, stdout: failedUpgradeChangedXml, stderr: "" };
+    }
+    if (args[0] === "/Create") {
+      failedUpgradeChangedCreates += 1;
+      const xmlPath = args[args.indexOf("/XML") + 1];
+      const requestedXml = await readFile(xmlPath, "utf8");
+      if (failedUpgradeChangedCreates === 1) {
+        failedUpgradeChangedXml = requestedXml.replace(
+          "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+          "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>",
+        );
+        return {
+          code: 1,
+          stdout: "",
+          stderr: "fixture failed after replacing definition",
+        };
+      }
+      failedUpgradeChangedXml = requestedXml;
+      return { code: 0, stdout: "SUCCESS", stderr: "" };
+    }
+    throw new Error(
+      `Unexpected failed-upgrade-change fixture call: ${args.join(" ")}`,
+    );
+  };
+  const failedUpgradeChangedBackend = createWindowsTaskSchedulerBackend(
+    failedUpgradeChangedRunner,
+    options,
+  );
+  const failedUpgradeChangedResult =
+    await failedUpgradeChangedBackend.install(request);
+  assert(
+    failedUpgradeChangedResult.ok === false &&
+      failedUpgradeChangedResult.status === "installed" &&
+      failedUpgradeChangedResult.detail.includes(
+        "exact prior Lifeline-owned definition was restored and verified",
+      ) &&
+      failedUpgradeChangedXml === v2Definition &&
+      failedUpgradeChangedCreates === 2,
+    "A nonzero owned-upgrade create that changes the definition must restore and verify the exact prior XML.",
+  );
+
+  const unchangedPriorXml = v2Definition;
+  let unchangedPriorCreates = 0;
+  const unchangedPriorRunner = async (args) => {
+    if (args[0] === "/Query") {
+      return { code: 0, stdout: unchangedPriorXml, stderr: "" };
+    }
+    if (args[0] === "/Create") {
+      unchangedPriorCreates += 1;
+      return { code: 1, stdout: "", stderr: "fixture create rejected" };
+    }
+    throw new Error(
+      `Unexpected unchanged-prior fixture call: ${args.join(" ")}`,
+    );
+  };
+  const unchangedPriorBackend = createWindowsTaskSchedulerBackend(
+    unchangedPriorRunner,
+    options,
+  );
+  const unchangedPriorResult = await unchangedPriorBackend.install(request);
+  assert(
+    unchangedPriorResult.ok === false &&
+      unchangedPriorResult.status === "installed" &&
+      unchangedPriorResult.detail.includes(
+        "exact prior Lifeline-owned definition remains installed, unchanged, and verified",
+      ) &&
+      unchangedPriorXml === v2Definition &&
+      unchangedPriorCreates === 1,
+    "A rejected owned-upgrade create must verify an unchanged exact prior definition without rewriting or deleting it.",
   );
 }
 

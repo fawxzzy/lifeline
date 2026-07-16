@@ -111,7 +111,9 @@ async function runCommand(
       resolve({
         code: -1,
         stdout: normalizeOutput(stdout),
-        stderr: normalizeOutput(`Unable to execute ${command}: ${error.message}`),
+        stderr: normalizeOutput(
+          `Unable to execute ${command}: ${error.message}`,
+        ),
       });
     });
 
@@ -143,7 +145,8 @@ function parseWhoamiCsv(raw: string): WindowsStartupIdentity | undefined {
 
 async function resolveCurrentIdentity(): Promise<WindowsStartupIdentity> {
   const result = await runCommand("whoami.exe", ["/user", "/fo", "csv", "/nh"]);
-  const identity = result.code === 0 ? parseWhoamiCsv(result.stdout) : undefined;
+  const identity =
+    result.code === 0 ? parseWhoamiCsv(result.stdout) : undefined;
   if (!identity) {
     throw new Error(
       `Could not resolve the current Windows user identity: ${
@@ -205,10 +208,6 @@ function countOpeningTags(xml: string, tag: string): number {
   return xml.match(new RegExp(`<${tag}(?:\\s[^>]*)?>`, "gi"))?.length ?? 0;
 }
 
-function isTrueOrSchedulerDefault(value: string): boolean {
-  return value === "" || value === "true";
-}
-
 interface FlatXmlChild {
   attributes: string;
   value: string;
@@ -218,8 +217,7 @@ function parseFlatXmlChildren(
   xml: string,
 ): Map<string, FlatXmlChild> | undefined {
   const children = new Map<string, FlatXmlChild>();
-  const childPattern =
-    /<([A-Za-z][A-Za-z0-9]*)\b([^>]*)>([\s\S]*?)<\/\1>/g;
+  const childPattern = /<([A-Za-z][A-Za-z0-9]*)\b([^>]*)>([\s\S]*?)<\/\1>/g;
   let cursor = 0;
   for (const match of xml.matchAll(childPattern)) {
     const index = match.index ?? -1;
@@ -242,9 +240,7 @@ function parseFlatXmlChildren(
 }
 
 function tagHasNoAttributes(xml: string, tag: string): boolean {
-  const matches = [
-    ...xml.matchAll(new RegExp(`<${tag}([^>]*)>`, "gi")),
-  ];
+  const matches = [...xml.matchAll(new RegExp(`<${tag}([^>]*)>`, "gi"))];
   return matches.length === 1 && (matches[0]?.[1] ?? "").trim() === "";
 }
 
@@ -258,6 +254,112 @@ function tagAttributeValue(
     new RegExp(`\\b${attribute}\\s*=\\s*"([^"]*)"`, "i"),
   )?.[1];
   return xmlDecode(value ?? "");
+}
+
+function parseXmlAttributes(
+  rawAttributes: string,
+): Map<string, string> | undefined {
+  const attributes = new Map<string, string>();
+  const attributePattern = /([A-Za-z_:][A-Za-z0-9_.:-]*)\s*=\s*"([^"]*)"/g;
+  let cursor = 0;
+  for (const match of rawAttributes.matchAll(attributePattern)) {
+    const index = match.index ?? -1;
+    const name = match[1];
+    if (
+      index < cursor ||
+      rawAttributes.slice(cursor, index).trim() !== "" ||
+      !name ||
+      attributes.has(name)
+    ) {
+      return undefined;
+    }
+    attributes.set(name, xmlDecode(match[2] ?? ""));
+    cursor = index + match[0].length;
+  }
+  return rawAttributes.slice(cursor).trim() === "" ? attributes : undefined;
+}
+
+function expectedLogonTrigger(
+  xml: string,
+  identity: WindowsStartupIdentity,
+): boolean {
+  if (
+    countOpeningTags(xml, "Triggers") !== 1 ||
+    !tagHasNoAttributes(xml, "Triggers")
+  ) {
+    return false;
+  }
+  const triggers = parseFlatXmlChildren(sectionValue(xml, "Triggers"));
+  const logonTrigger = triggers?.get("LogonTrigger");
+  if (
+    triggers?.size !== 1 ||
+    !logonTrigger ||
+    logonTrigger.attributes.trim() !== ""
+  ) {
+    return false;
+  }
+
+  const children = parseFlatXmlChildren(logonTrigger.value);
+  const enabled = children?.get("Enabled");
+  return (
+    (children?.size === 1 || children?.size === 2) &&
+    [...children.keys()].every(
+      (tag) => tag === "Enabled" || tag === "UserId",
+    ) &&
+    children.get("UserId")?.attributes.trim() === "" &&
+    matchesExpectedIdentity(
+      xmlDecode(children.get("UserId")?.value.trim() ?? ""),
+      identity,
+    ) &&
+    (enabled === undefined ||
+      (enabled.attributes.trim() === "" &&
+        xmlDecode(enabled.value.trim()) === "true"))
+  );
+}
+
+function expectedPrincipal(
+  xml: string,
+  identity: WindowsStartupIdentity,
+): boolean {
+  if (
+    countOpeningTags(xml, "Principals") !== 1 ||
+    !tagHasNoAttributes(xml, "Principals")
+  ) {
+    return false;
+  }
+  const principals = parseFlatXmlChildren(sectionValue(xml, "Principals"));
+  const principal = principals?.get("Principal");
+  const principalAttributes = principal
+    ? parseXmlAttributes(principal.attributes)
+    : undefined;
+  if (
+    principals?.size !== 1 ||
+    !principal ||
+    principalAttributes?.size !== 1 ||
+    principalAttributes.get("id") !== "Author"
+  ) {
+    return false;
+  }
+
+  const children = parseFlatXmlChildren(principal.value);
+  const runLevel = children?.get("RunLevel");
+  return (
+    (children?.size === 2 || children?.size === 3) &&
+    [...children.keys()].every(
+      (tag) => tag === "UserId" || tag === "LogonType" || tag === "RunLevel",
+    ) &&
+    children.get("UserId")?.attributes.trim() === "" &&
+    matchesExpectedIdentity(
+      xmlDecode(children.get("UserId")?.value.trim() ?? ""),
+      identity,
+    ) &&
+    children.get("LogonType")?.attributes.trim() === "" &&
+    xmlDecode(children.get("LogonType")?.value.trim() ?? "") ===
+      "InteractiveToken" &&
+    (runLevel === undefined ||
+      (runLevel.attributes.trim() === "" &&
+        xmlDecode(runLevel.value.trim()) === "LeastPrivilege"))
+  );
 }
 
 function singleExecAction(xml: string): string | undefined {
@@ -314,8 +416,7 @@ function matchesRequiredTaskSettings(settings: string): boolean {
     xmlDecode(idleChildren.get("StopOnIdleEnd")?.value.trim() ?? "") ===
       "false" &&
     idleChildren.get("RestartOnIdle")?.attributes.trim() === "" &&
-    xmlDecode(idleChildren.get("RestartOnIdle")?.value.trim() ?? "") ===
-      "false"
+    xmlDecode(idleChildren.get("RestartOnIdle")?.value.trim() ?? "") === "false"
   );
 }
 
@@ -359,7 +460,10 @@ async function hashDirectory(directory: string): Promise<string> {
   return hash.digest("hex");
 }
 
-async function copyDirectory(source: string, destination: string): Promise<void> {
+async function copyDirectory(
+  source: string,
+  destination: string,
+): Promise<void> {
   await mkdir(destination, { recursive: true });
   const entries = await readdir(source, { withFileTypes: true });
   for (const entry of entries) {
@@ -519,8 +623,12 @@ function buildTaskXml(expected: Omit<ExpectedTaskDefinition, "xml">): string {
 async function buildExpectedTaskDefinition(
   options: WindowsTaskSchedulerOptions,
 ): Promise<ExpectedTaskDefinition> {
-  const rootDirectory = path.resolve(options.rootDirectory ?? getLifelineRoot());
-  const nodeExecutable = path.resolve(options.nodeExecutable ?? process.execPath);
+  const rootDirectory = path.resolve(
+    options.rootDirectory ?? getLifelineRoot(),
+  );
+  const nodeExecutable = path.resolve(
+    options.nodeExecutable ?? process.execPath,
+  );
   const cliEntrypoint = path.resolve(
     options.cliEntrypoint ??
       fileURLToPath(new URL("../../cli.js", import.meta.url)),
@@ -528,7 +636,10 @@ async function buildExpectedTaskDefinition(
   const identity = options.identity ?? (await resolveCurrentIdentity());
   const launcher = await buildLauncherPlan(rootDirectory, cliEntrypoint);
 
-  if (rootDirectory.includes('"') || launcher.launcherEntrypoint.includes('"')) {
+  if (
+    rootDirectory.includes('"') ||
+    launcher.launcherEntrypoint.includes('"')
+  ) {
     throw new Error("Windows startup paths must not contain quote characters.");
   }
 
@@ -555,10 +666,12 @@ function isLifelineOwnedTask(
   expected: ExpectedTaskDefinition,
 ): boolean {
   const registrationInfo = sectionValue(xml, "RegistrationInfo");
-  const logonTrigger = sectionValue(xml, "LogonTrigger");
-  const principal = sectionValue(xml, "Principal");
   const action = singleExecAction(xml);
-  if (!action) {
+  if (
+    !action ||
+    !expectedLogonTrigger(xml, expected.identity) ||
+    !expectedPrincipal(xml, expected.identity)
+  ) {
     return false;
   }
   const description = tagValue(registrationInfo, "Description");
@@ -588,8 +701,6 @@ function isLifelineOwnedTask(
   return (
     tagValue(registrationInfo, "Author") === TASK_AUTHOR &&
     tagValue(registrationInfo, "URI") === TASK_URI &&
-    matchesExpectedIdentity(tagValue(logonTrigger, "UserId"), expected.identity) &&
-    matchesExpectedIdentity(tagValue(principal, "UserId"), expected.identity) &&
     recognizedVersion &&
     normalizeComparablePath(describedRoot) ===
       normalizeComparablePath(expected.rootDirectory) &&
@@ -612,11 +723,13 @@ function matchesExpectedTask(
   expected: ExpectedTaskDefinition,
 ): boolean {
   const registrationInfo = sectionValue(xml, "RegistrationInfo");
-  const logonTrigger = sectionValue(xml, "LogonTrigger");
-  const principal = sectionValue(xml, "Principal");
   const settings = sectionValue(xml, "Settings");
   const action = singleExecAction(xml);
-  if (!action) {
+  if (
+    !action ||
+    !expectedLogonTrigger(xml, expected.identity) ||
+    !expectedPrincipal(xml, expected.identity)
+  ) {
     return false;
   }
 
@@ -624,12 +737,6 @@ function matchesExpectedTask(
     tagValue(registrationInfo, "Author") === TASK_AUTHOR &&
     tagValue(registrationInfo, "Description") === expected.description &&
     tagValue(registrationInfo, "URI") === TASK_URI &&
-    matchesExpectedIdentity(tagValue(logonTrigger, "UserId"), expected.identity) &&
-    isTrueOrSchedulerDefault(tagValue(logonTrigger, "Enabled")) &&
-    matchesExpectedIdentity(tagValue(principal, "UserId"), expected.identity) &&
-    tagValue(principal, "LogonType") === "InteractiveToken" &&
-    (tagValue(principal, "RunLevel") === "" ||
-      tagValue(principal, "RunLevel") === "LeastPrivilege") &&
     tagHasNoAttributes(xml, "Settings") &&
     matchesRequiredTaskSettings(settings) &&
     normalizeComparablePath(tagValue(action, "Command")) ===
@@ -673,7 +780,9 @@ async function inspectTaskDetailed(
           state: "error",
           expected,
           detail: `Could not inspect task ${WINDOWS_STARTUP_TASK_NAME}: ${
-            queryResult.stderr || queryResult.stdout || "unknown scheduler error"
+            queryResult.stderr ||
+            queryResult.stdout ||
+            "unknown scheduler error"
           }`,
         };
   }
@@ -726,11 +835,7 @@ async function ensureLauncherSnapshot(launcher: LauncherPlan): Promise<void> {
       await unlink(path.join(launcher.launcherDirectory, relativeFile));
     }
   }
-  await writeFile(
-    launcher.launcherMetadataPath,
-    expectedMetadata,
-    "utf8",
-  );
+  await writeFile(launcher.launcherMetadataPath, expectedMetadata, "utf8");
   if (!(await launcherSnapshotMatches(launcher, expectedMetadata))) {
     throw new Error(
       `Stable launcher snapshot verification failed at ${launcher.launcherDirectory}.`,
@@ -748,7 +853,7 @@ function normalizeTaskXmlForComparison(xml: string): string {
 
 async function removeNewlyCreatedTaskAfterFailedReadback(
   runner: WindowsSchedulerRunner,
-): Promise<string> {
+): Promise<{ verified: boolean; detail: string }> {
   const deleteResult = await runner([
     "/Delete",
     "/TN",
@@ -756,11 +861,14 @@ async function removeNewlyCreatedTaskAfterFailedReadback(
     "/F",
   ]);
   if (deleteResult.code !== 0 && !isTaskMissing(deleteResult)) {
-    return `Rollback also failed: ${
-      deleteResult.stderr ||
-      deleteResult.stdout ||
-      "unknown scheduler delete error"
-    }`;
+    return {
+      verified: false,
+      detail: `Rollback also failed: ${
+        deleteResult.stderr ||
+        deleteResult.stdout ||
+        "unknown scheduler delete error"
+      }`,
+    };
   }
 
   const readback = await runner([
@@ -771,19 +879,26 @@ async function removeNewlyCreatedTaskAfterFailedReadback(
     "ONE",
   ]);
   return readback.code !== 0 && isTaskMissing(readback)
-    ? "The newly created packet-owned registration was rolled back and absence was verified."
-    : `Rollback deletion could not be verified: ${
-        readback.stderr ||
-        readback.stdout ||
-        "task still returned a scheduler definition"
-      }`;
+    ? {
+        verified: true,
+        detail:
+          "The newly created packet-owned registration was rolled back and absence was verified.",
+      }
+    : {
+        verified: false,
+        detail: `Rollback deletion could not be verified: ${
+          readback.stderr ||
+          readback.stdout ||
+          "task still returned a scheduler definition"
+        }`,
+      };
 }
 
 async function restorePriorOwnedTaskAfterFailedReadback(
   runner: WindowsSchedulerRunner,
   launcher: LauncherPlan,
   priorXml: string,
-): Promise<string> {
+): Promise<{ verified: boolean; detail: string }> {
   const restorableXml = priorXml.replace(/^\s*<\?xml[^>]*>\s*/i, "");
   await writeFile(launcher.rollbackDefinitionPath, restorableXml, "utf8");
   const restoreResult = await runner([
@@ -795,11 +910,14 @@ async function restorePriorOwnedTaskAfterFailedReadback(
     "/F",
   ]);
   if (restoreResult.code !== 0) {
-    return `Prior owned definition restoration failed: ${
-      restoreResult.stderr ||
-      restoreResult.stdout ||
-      "unknown scheduler restore error"
-    }`;
+    return {
+      verified: false,
+      detail: `Prior owned definition restoration failed: ${
+        restoreResult.stderr ||
+        restoreResult.stdout ||
+        "unknown scheduler restore error"
+      }`,
+    };
   }
 
   const restoredReadback = await runner([
@@ -814,13 +932,94 @@ async function restorePriorOwnedTaskAfterFailedReadback(
     normalizeTaskXmlForComparison(restoredReadback.stdout) ===
       normalizeTaskXmlForComparison(priorXml)
   ) {
-    return "The exact prior Lifeline-owned definition was restored and verified.";
+    return {
+      verified: true,
+      detail:
+        "The exact prior Lifeline-owned definition was restored and verified.",
+    };
   }
-  return `Prior owned definition restoration could not be verified: ${
-    restoredReadback.stderr ||
-    restoredReadback.stdout ||
-    "scheduler returned a different definition"
-  }`;
+  return {
+    verified: false,
+    detail: `Prior owned definition restoration could not be verified: ${
+      restoredReadback.stderr ||
+      restoredReadback.stdout ||
+      "scheduler returned a different definition"
+    }`,
+  };
+}
+
+async function reconcileFailedTaskCreation(
+  runner: WindowsSchedulerRunner,
+  inspection: DetailedTaskInspection,
+): Promise<{
+  verified: boolean;
+  status: "installed" | "not-installed";
+  detail: string;
+}> {
+  const readback = await runner([
+    "/Query",
+    "/TN",
+    WINDOWS_STARTUP_TASK_NAME,
+    "/XML",
+    "ONE",
+  ]);
+
+  if (inspection.state === "owned-drift" && inspection.existingXml) {
+    if (
+      readback.code === 0 &&
+      normalizeTaskXmlForComparison(readback.stdout) ===
+        normalizeTaskXmlForComparison(inspection.existingXml)
+    ) {
+      return {
+        verified: true,
+        status: "installed",
+        detail:
+          "The current-v4 enable failed; the exact prior Lifeline-owned definition remains installed, unchanged, and verified.",
+      };
+    }
+    const restoration = await restorePriorOwnedTaskAfterFailedReadback(
+      runner,
+      inspection.expected.launcher,
+      inspection.existingXml,
+    );
+    return {
+      verified: restoration.verified,
+      status: "installed",
+      detail: restoration.verified
+        ? `The current-v4 enable failed; ${restoration.detail}`
+        : restoration.detail,
+    };
+  }
+
+  if (readback.code !== 0 && isTaskMissing(readback)) {
+    return {
+      verified: true,
+      status: "not-installed",
+      detail: "The task remained absent and absence was verified.",
+    };
+  }
+  if (
+    readback.code === 0 &&
+    (matchesExpectedTask(readback.stdout, inspection.expected) ||
+      isLifelineOwnedTask(readback.stdout, inspection.expected))
+  ) {
+    const removal = await removeNewlyCreatedTaskAfterFailedReadback(runner);
+    return {
+      verified: removal.verified,
+      status: removal.verified ? "not-installed" : "installed",
+      detail: removal.detail,
+    };
+  }
+
+  return {
+    verified: false,
+    status: "installed",
+    detail: `FAIL-CLOSED BLOCKER: create transaction left task ownership or absence ambiguous: ${
+      readback.stderr ||
+      readback.stdout ||
+      "scheduler query did not prove absence"
+    }`,
+  };
 }
 
 function toBackendInspection(
@@ -828,8 +1027,12 @@ function toBackendInspection(
 ): StartupBackendInspection {
   return {
     supported: detailed.state !== "unsupported",
-    status: detailed.state === "installed" ? "installed" :
-      detailed.state === "unsupported" ? "unsupported" : "not-installed",
+    status:
+      detailed.state === "installed"
+        ? "installed"
+        : detailed.state === "unsupported"
+          ? "unsupported"
+          : "not-installed",
     mechanism: TASK_MECHANISM,
     detail: detailed.detail,
   };
@@ -867,7 +1070,11 @@ export function createWindowsTaskSchedulerBackend(
         return { status: "unsupported", detail: inspection.detail, ok: false };
       }
       if (inspection.state === "conflict" || inspection.state === "error") {
-        return { status: "not-installed", detail: inspection.detail, ok: false };
+        return {
+          status: "not-installed",
+          detail: inspection.detail,
+          ok: false,
+        };
       }
 
       await ensureLauncherSnapshot(inspection.expected.launcher);
@@ -878,9 +1085,12 @@ export function createWindowsTaskSchedulerBackend(
         };
       }
 
-      await mkdir(path.dirname(inspection.expected.launcher.taskDefinitionPath), {
-        recursive: true,
-      });
+      await mkdir(
+        path.dirname(inspection.expected.launcher.taskDefinitionPath),
+        {
+          recursive: true,
+        },
+      );
       await writeFile(
         inspection.expected.launcher.taskDefinitionPath,
         inspection.expected.xml,
@@ -897,31 +1107,36 @@ export function createWindowsTaskSchedulerBackend(
       ];
       const createResult = await runner(createArgs);
       if (createResult.code !== 0) {
+        const reconciliation = await reconcileFailedTaskCreation(
+          runner,
+          inspection,
+        );
         return {
-          status: "not-installed",
+          status: reconciliation.status,
           ok: false,
           detail: `Failed to register task ${WINDOWS_STARTUP_TASK_NAME}: ${
-            createResult.stderr || createResult.stdout || "unknown scheduler error"
+            createResult.stderr ||
+            createResult.stdout ||
+            "unknown scheduler error"
+          }. ${reconciliation.detail}${
+            reconciliation.verified
+              ? ""
+              : " Startup transaction integrity could not be verified."
           }`,
         };
       }
 
       const readback = await inspectTaskDetailed(runner, options);
       if (readback.state !== "installed") {
-        const rollbackDetail =
-          inspection.state === "owned-drift" && inspection.existingXml
-            ? await restorePriorOwnedTaskAfterFailedReadback(
-                runner,
-                inspection.expected.launcher,
-                inspection.existingXml,
-              )
-            : await removeNewlyCreatedTaskAfterFailedReadback(runner);
+        const rollback = await reconcileFailedTaskCreation(runner, inspection);
         return {
-          status: "not-installed",
+          status: rollback.status,
           ok: false,
-          detail:
-            `Task ${WINDOWS_STARTUP_TASK_NAME} registration did not pass exact readback: ` +
-            `${readback.detail} ${rollbackDetail}`,
+          detail: `Task ${WINDOWS_STARTUP_TASK_NAME} registration did not pass exact readback: ${readback.detail} ${rollback.detail}${
+            rollback.verified
+              ? ""
+              : " FAIL-CLOSED BLOCKER: startup transaction integrity could not be verified."
+          }`,
         };
       }
 
@@ -940,7 +1155,8 @@ export function createWindowsTaskSchedulerBackend(
         return {
           status: toBackendInspection(inspection).status,
           detail:
-            inspection.state === "installed" || inspection.state === "owned-drift"
+            inspection.state === "installed" ||
+            inspection.state === "owned-drift"
               ? `Dry-run: would remove Lifeline-owned task ${WINDOWS_STARTUP_TASK_NAME}.`
               : inspection.state === "absent"
                 ? `Dry-run: task ${WINDOWS_STARTUP_TASK_NAME} is not present; no mutation required.`
@@ -955,7 +1171,11 @@ export function createWindowsTaskSchedulerBackend(
         return { status: "unsupported", detail: inspection.detail, ok: false };
       }
       if (inspection.state === "conflict" || inspection.state === "error") {
-        return { status: "not-installed", detail: inspection.detail, ok: false };
+        return {
+          status: "not-installed",
+          detail: inspection.detail,
+          ok: false,
+        };
       }
       if (inspection.state === "absent") {
         return {
@@ -970,19 +1190,44 @@ export function createWindowsTaskSchedulerBackend(
         WINDOWS_STARTUP_TASK_NAME,
         "/F",
       ]);
-      if (deleteResult.code !== 0 && !isTaskMissing(deleteResult)) {
+      const deleteFailure =
+        deleteResult.code !== 0 && !isTaskMissing(deleteResult)
+          ? deleteResult.stderr ||
+            deleteResult.stdout ||
+            "unknown scheduler delete error"
+          : undefined;
+
+      const removalReadback = await runner([
+        "/Query",
+        "/TN",
+        WINDOWS_STARTUP_TASK_NAME,
+        "/XML",
+        "ONE",
+      ]);
+      if (removalReadback.code === 0) {
         return {
           status: "installed",
           ok: false,
-          detail: `Failed to remove task ${WINDOWS_STARTUP_TASK_NAME}: ${
-            deleteResult.stderr || deleteResult.stdout || "unknown scheduler error"
-          }`,
+          detail: `Failed to verify removal of task ${WINDOWS_STARTUP_TASK_NAME}: the exact task identity is still present${deleteFailure ? ` after delete error: ${deleteFailure}` : ""}. Startup intent remains enabled.`,
+        };
+      }
+      if (!isTaskMissing(removalReadback)) {
+        return {
+          status: "installed",
+          ok: false,
+          detail: `FAIL-CLOSED BLOCKER: removal of task ${WINDOWS_STARTUP_TASK_NAME} could not be verified: ${
+            removalReadback.stderr ||
+            removalReadback.stdout ||
+            "scheduler query did not prove absence"
+          }. Startup intent remains enabled.`,
         };
       }
 
       return {
         status: "not-installed",
-        detail: `Removed Lifeline-owned task ${WINDOWS_STARTUP_TASK_NAME} from Windows Task Scheduler.`,
+        detail: deleteFailure
+          ? `Task ${WINDOWS_STARTUP_TASK_NAME} is absent after a scheduler delete error and absence was verified: ${deleteFailure}.`
+          : `Removed Lifeline-owned task ${WINDOWS_STARTUP_TASK_NAME} from Windows Task Scheduler and verified its absence.`,
       };
     },
   };

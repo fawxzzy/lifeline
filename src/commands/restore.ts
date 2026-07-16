@@ -1,15 +1,18 @@
 import {
   isProcessAlive,
   startDetachedExecutable,
+  stopProcess,
 } from "../core/process-manager.js";
 import {
-  readState,
   type RuntimeStateFile,
+  readState,
   upsertAppState,
 } from "../core/state-store.js";
+import { runDownCommand } from "./down.js";
 import { prepareRuntimeApp } from "./up.js";
 
 const STARTUP_TERMINAL_TIMEOUT_MS = 20_000;
+const STARTUP_TERMINAL_GRACE_MS = 2_000;
 
 export interface RestoredStartupApp {
   name: string;
@@ -20,6 +23,18 @@ export interface RestoredStartupApp {
 export interface RestoreCommandOptions {
   startup?: boolean;
 }
+
+export interface StartupRestoreCleanupDependencies {
+  downApp?: (appName: string) => Promise<number>;
+  processAlive?: (pid: number) => Promise<boolean>;
+  readRuntimeState?: () => Promise<RuntimeStateFile>;
+  stopSupervisor?: (pid: number) => Promise<void>;
+  wait?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+export type StartupRestoreMonitorDependencies =
+  StartupRestoreCleanupDependencies;
 
 export function isPersistedStatusEligibleForRestore(
   status: "running" | "stopped" | "unhealthy" | "crash-loop" | "blocked",
@@ -36,20 +51,76 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function holdStartupRestoreWrapper(
-  restoredSupervisorPids: number[],
-): Promise<void> {
+export async function holdStartupRestoreWrapper(
+  restoredApps: RestoredStartupApp[],
+  dependencies: StartupRestoreMonitorDependencies = {},
+): Promise<string | undefined> {
+  const processAlive = dependencies.processAlive ?? isProcessAlive;
+  const readRuntimeState = dependencies.readRuntimeState ?? readState;
+  const wait = dependencies.wait ?? delay;
+  const now = dependencies.now ?? Date.now;
+  const deadSince = new Map<number, number>();
   console.log(
-    `Startup restore wrapper is holding for supervisor pids ${restoredSupervisorPids.join(", ")}.`,
+    `Startup restore wrapper is holding for supervisor pids ${restoredApps.map((app) => app.supervisorPid).join(", ")}.`,
   );
   while (true) {
-    const alive = await Promise.all(
-      restoredSupervisorPids.map((pid) => isProcessAlive(pid)),
-    );
-    if (alive.every((value) => !value)) {
-      return;
+    let state: RuntimeStateFile;
+    let alive: boolean[];
+    try {
+      [state, alive] = await Promise.all([
+        readRuntimeState(),
+        Promise.all(restoredApps.map((app) => processAlive(app.supervisorPid))),
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `startup hold inspection failed: ${message}`;
     }
-    await delay(500);
+
+    let pendingTerminalFailure: string | undefined;
+    for (const [index, restored] of restoredApps.entries()) {
+      const app = state.apps[restored.name];
+      if (!app) {
+        return `${restored.name} runtime state is missing during startup hold`;
+      }
+      if (app.supervisorPid !== restored.supervisorPid) {
+        return `${restored.name} supervisor identity changed from ${restored.supervisorPid} to ${app.supervisorPid} during startup hold`;
+      }
+      if (
+        app.lastKnownStatus === "blocked" ||
+        app.lastKnownStatus === "crash-loop" ||
+        app.lastKnownStatus === "unhealthy" ||
+        app.blockedReason !== undefined ||
+        app.crashLoopDetected
+      ) {
+        return `${restored.name} entered ${app.lastKnownStatus} during startup hold`;
+      }
+      if (!alive[index]) {
+        const terminalFailure = getStartupRestoreTerminalFailure(
+          [restored],
+          state,
+        );
+        if (terminalFailure) {
+          const firstDeadAt = deadSince.get(restored.supervisorPid) ?? now();
+          deadSince.set(restored.supervisorPid, firstDeadAt);
+          if (now() - firstDeadAt >= STARTUP_TERMINAL_GRACE_MS) {
+            return terminalFailure;
+          }
+          pendingTerminalFailure ??= terminalFailure;
+        } else {
+          deadSince.delete(restored.supervisorPid);
+        }
+      } else {
+        deadSince.delete(restored.supervisorPid);
+      }
+    }
+
+    if (
+      alive.every((value) => !value) &&
+      pendingTerminalFailure === undefined
+    ) {
+      return undefined;
+    }
+    await wait(500);
   }
 }
 
@@ -95,18 +166,136 @@ export function getStartupRestoreTerminalFailure(
 
 async function waitForStartupRestoreTerminalState(
   restoredApps: RestoredStartupApp[],
+  readRuntimeState: () => Promise<RuntimeStateFile> = readState,
+  wait: (ms: number) => Promise<void> = delay,
 ): Promise<string | undefined> {
   const deadline = Date.now() + STARTUP_TERMINAL_TIMEOUT_MS;
   let failure = "startup terminal state was not inspected";
   while (Date.now() <= deadline) {
-    failure =
-      getStartupRestoreTerminalFailure(restoredApps, await readState()) ?? "";
+    let state: RuntimeStateFile;
+    try {
+      state = await readRuntimeState();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `startup terminal state inspection failed: ${message}`;
+    }
+    failure = getStartupRestoreTerminalFailure(restoredApps, state) ?? "";
     if (!failure) {
       return undefined;
     }
-    await delay(250);
+    await wait(250);
   }
   return failure;
+}
+
+export async function cleanupPartialStartupRestore(
+  restoredApps: RestoredStartupApp[],
+  dependencies: StartupRestoreCleanupDependencies = {},
+): Promise<string | undefined> {
+  const downApp = dependencies.downApp ?? runDownCommand;
+  const processAlive = dependencies.processAlive ?? isProcessAlive;
+  const readRuntimeState = dependencies.readRuntimeState ?? readState;
+  const stopSupervisor = dependencies.stopSupervisor ?? stopProcess;
+  const wait = dependencies.wait ?? delay;
+  const cleanupFailures: string[] = [];
+
+  for (const restored of [...restoredApps].reverse()) {
+    const exitCode = await downApp(restored.name).catch(() => 1);
+    if (exitCode !== 0) {
+      cleanupFailures.push(`${restored.name} down exited ${exitCode}`);
+    }
+  }
+
+  const deadline = Date.now() + STARTUP_TERMINAL_TIMEOUT_MS;
+  let alive = restoredApps.filter(() => false);
+  do {
+    alive = [];
+    for (const restored of restoredApps) {
+      let isAlive = false;
+      try {
+        isAlive = await processAlive(restored.supervisorPid);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        cleanupFailures.push(
+          `${restored.name} supervisor liveness inspection failed: ${message}`,
+        );
+        await stopSupervisor(restored.supervisorPid).catch(() => undefined);
+      }
+      if (isAlive) {
+        alive.push(restored);
+        await stopSupervisor(restored.supervisorPid).catch((error) => {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          cleanupFailures.push(
+            `${restored.name} supervisor stop failed: ${message}`,
+          );
+        });
+      }
+    }
+    if (alive.length > 0) {
+      await wait(250);
+    }
+  } while (alive.length > 0 && Date.now() <= deadline);
+
+  const stillAlive: RestoredStartupApp[] = [];
+  for (const restored of restoredApps) {
+    await processAlive(restored.supervisorPid).then(
+      (isAlive) => {
+        if (isAlive) {
+          stillAlive.push(restored);
+        }
+      },
+      (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        cleanupFailures.push(
+          `${restored.name} final supervisor liveness readback failed: ${message}`,
+        );
+      },
+    );
+  }
+  if (stillAlive.length > 0) {
+    cleanupFailures.push(
+      `supervisor pids still alive: ${stillAlive.map((app) => app.supervisorPid).join(", ")}`,
+    );
+  }
+
+  const terminalFailure = await waitForStartupRestoreTerminalState(
+    restoredApps,
+    readRuntimeState,
+    wait,
+  );
+  if (terminalFailure) {
+    cleanupFailures.push(terminalFailure);
+  }
+  return cleanupFailures.length > 0 ? cleanupFailures.join("; ") : undefined;
+}
+
+export async function monitorStartupRestore(
+  restoredApps: RestoredStartupApp[],
+  dependencies: StartupRestoreMonitorDependencies = {},
+): Promise<string | undefined> {
+  const holdFailure = await holdStartupRestoreWrapper(
+    restoredApps,
+    dependencies,
+  );
+  const terminalFailure =
+    holdFailure ??
+    (await waitForStartupRestoreTerminalState(
+      restoredApps,
+      dependencies.readRuntimeState ?? readState,
+      dependencies.wait ?? delay,
+    ));
+  if (!terminalFailure) {
+    return undefined;
+  }
+
+  const cleanupFailure = await cleanupPartialStartupRestore(
+    restoredApps,
+    dependencies,
+  );
+  return cleanupFailure
+    ? `${terminalFailure}; cleanup failed: ${cleanupFailure}`
+    : `${terminalFailure}; all supervisors started by this invocation were stopped and verified`;
 }
 
 export async function runRestoreCommand(
@@ -160,53 +349,73 @@ export async function runRestoreCommand(
       });
       console.error(`Failed to restore ${app.name}: ${message}`);
       failures += 1;
+      if (options.startup === true) {
+        break;
+      }
       continue;
     }
 
     const cliPath = process.argv[1] ?? "dist/cli.js";
     const startedAt = new Date().toISOString();
-    const supervisorPid = await startDetachedExecutable({
-      executable: process.execPath,
-      args: [cliPath, "supervise", app.name],
-      cwd: process.cwd(),
-      env: process.env,
-      label: `${app.name} supervisor`,
-    });
-
-    await upsertAppState({
-      ...app,
-      supervisorPid,
-      childPid: undefined,
-      wrapperPid: undefined,
-      listenerPid: undefined,
-      portOwnerPid: undefined,
-      blockedReason: undefined,
-      startedAt,
-      lastKnownStatus: "stopped",
-      crashLoopDetected: false,
-      lastExitCode: undefined,
-      lastExitAt: undefined,
-    });
+    let supervisorPid: number;
+    try {
+      supervisorPid = await startDetachedExecutable({
+        executable: process.execPath,
+        args: [cliPath, "supervise", app.name],
+        cwd: process.cwd(),
+        env: process.env,
+        label: `${app.name} supervisor`,
+      });
+      restoredSupervisorPids.push(supervisorPid);
+      restoredStartupApps.push({ name: app.name, supervisorPid, startedAt });
+      await upsertAppState({
+        ...app,
+        supervisorPid,
+        childPid: undefined,
+        wrapperPid: undefined,
+        listenerPid: undefined,
+        portOwnerPid: undefined,
+        blockedReason: undefined,
+        startedAt,
+        lastKnownStatus: "stopped",
+        crashLoopDetected: false,
+        lastExitCode: undefined,
+        lastExitAt: undefined,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Failed to restore ${app.name}: ${message}`);
+      failures += 1;
+      if (options.startup === true) {
+        break;
+      }
+      continue;
+    }
 
     console.log(`Restored ${app.name} with supervisor pid ${supervisorPid}.`);
-    restoredSupervisorPids.push(supervisorPid);
-    restoredStartupApps.push({ name: app.name, supervisorPid, startedAt });
     restored += 1;
   }
 
-  if (restored === 0) {
+  if (restored === 0 && restoredStartupApps.length === 0) {
     console.log("No restorable apps required restart.");
   }
 
-  if (
-    options.startup === true &&
-    failures === 0 &&
-    restoredSupervisorPids.length > 0
-  ) {
-    await holdStartupRestoreWrapper(restoredSupervisorPids);
-    const terminalFailure = await waitForStartupRestoreTerminalState(
-      restoredStartupApps,
-    );
+  if (options.startup === true && restoredSupervisorPids.length > 0) {
+    if (failures > 0) {
+      const cleanupFailure =
+        await cleanupPartialStartupRestore(restoredStartupApps);
+      if (cleanupFailure) {
+        console.error(
+          `Partial startup restore cleanup failed: ${cleanupFailure}.`,
+        );
+      } else {
+        console.error(
+          "Partial startup restore was stopped and terminal state was verified.",
+        );
+      }
+      return 1;
+    }
+    const terminalFailure = await monitorStartupRestore(restoredStartupApps);
     if (terminalFailure) {
       console.error(`Startup restore failed closed: ${terminalFailure}.`);
       return 1;
