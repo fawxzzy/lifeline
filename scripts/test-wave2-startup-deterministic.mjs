@@ -1687,11 +1687,15 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
 
   let upgradeRollbackXml = v2Definition;
   let upgradeCreateCount = 0;
+  let upgradeCreateAttempted = false;
   const upgradeRollbackInvocations = [];
   const upgradeDefinitionPaths = [];
   const upgradeRollbackRunner = async (args) => {
     upgradeRollbackInvocations.push([...args]);
     if (args[0] === "/Query") {
+      if (!upgradeCreateAttempted) {
+        return { code: 0, stdout: v2Definition, stderr: "" };
+      }
       return upgradeRollbackXml
         ? { code: 0, stdout: upgradeRollbackXml, stderr: "" }
         : {
@@ -1702,16 +1706,11 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     }
     if (args[0] === "/Create") {
       upgradeCreateCount += 1;
+      upgradeCreateAttempted = true;
       const xmlPath = args[args.indexOf("/XML") + 1];
       upgradeDefinitionPaths.push(xmlPath);
       const requestedXml = await readFile(xmlPath, "utf8");
-      upgradeRollbackXml =
-        upgradeCreateCount === 1
-          ? requestedXml.replace(
-              " restore --startup</Arguments>",
-              " status</Arguments>",
-            )
-          : requestedXml;
+      upgradeRollbackXml = upgradeCreateCount === 1 ? "" : requestedXml;
       return { code: 0, stdout: "SUCCESS", stderr: "" };
     }
     if (args[0] === "/Delete") {
@@ -1745,7 +1744,7 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
         )
       ).every((exists) => !exists) &&
       !upgradeRollbackInvocations.some(([command]) => command === "/Delete"),
-    "A failed owned-drift upgrade must restore and verify the exact prior v2 definition through a distinct cleaned invocation-owned XML file without deleting it.",
+    "A successful owned-drift scheduler mutation whose readback proves the task missing must restore and verify the exact prior v2 definition through a distinct cleaned invocation-owned XML file without deleting it.",
   );
 
   let failedAbsentCreateXml = "";
@@ -1847,7 +1846,9 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
 
   let failedUpgradeChangedXml = v2Definition;
   let failedUpgradeChangedCreates = 0;
+  const failedUpgradeChangedInvocations = [];
   const failedUpgradeChangedRunner = async (args) => {
+    failedUpgradeChangedInvocations.push([...args]);
     if (args[0] === "/Query") {
       return { code: 0, stdout: failedUpgradeChangedXml, stderr: "" };
     }
@@ -1857,8 +1858,8 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
       const requestedXml = await readFile(xmlPath, "utf8");
       if (failedUpgradeChangedCreates === 1) {
         failedUpgradeChangedXml = requestedXml.replace(
-          "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
-          "<ExecutionTimeLimit>PT1H</ExecutionTimeLimit>",
+          "<Author>Lifeline</Author>",
+          "<Author>Foreign</Author>",
         );
         return {
           code: 1,
@@ -1883,11 +1884,98 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
     failedUpgradeChangedResult.ok === false &&
       failedUpgradeChangedResult.status === "installed" &&
       failedUpgradeChangedResult.detail.includes(
-        "exact prior Lifeline-owned definition was restored and verified",
+        "observed definition was preserved",
       ) &&
-      failedUpgradeChangedXml === v2Definition &&
-      failedUpgradeChangedCreates === 2,
-    "A nonzero owned-upgrade create that changes the definition must restore and verify the exact prior XML.",
+      failedUpgradeChangedXml.includes("<Author>Foreign</Author>") &&
+      failedUpgradeChangedCreates === 1 &&
+      !failedUpgradeChangedInvocations.some(
+        ([command]) => command === "/Delete",
+      ),
+    "A nonzero owned-upgrade create that reads a different or foreign definition must preserve it and fail closed without restoring stale prior XML.",
+  );
+
+  let concurrentUpgradeXml = v2Definition;
+  let concurrentUpgradeCreates = 0;
+  const concurrentUpgradeInvocations = [];
+  const concurrentUpgradeRunner = async (args) => {
+    concurrentUpgradeInvocations.push([...args]);
+    if (args[0] === "/Query") {
+      return { code: 0, stdout: concurrentUpgradeXml, stderr: "" };
+    }
+    if (args[0] === "/Create") {
+      concurrentUpgradeCreates += 1;
+      const xmlPath = args[args.indexOf("/XML") + 1];
+      concurrentUpgradeXml = await readFile(xmlPath, "utf8");
+      return {
+        code: 1,
+        stdout: "",
+        stderr: "fixture concurrent upgrade winner",
+      };
+    }
+    throw new Error(
+      `Unexpected concurrent-upgrade fixture call: ${args.join(" ")}`,
+    );
+  };
+  const concurrentUpgradeBackend = createWindowsTaskSchedulerBackend(
+    concurrentUpgradeRunner,
+    options,
+  );
+  const concurrentUpgradeResult =
+    await concurrentUpgradeBackend.install(request);
+  assert(
+    concurrentUpgradeResult.ok !== false &&
+      concurrentUpgradeResult.status === "installed" &&
+      concurrentUpgradeResult.detail.includes("enable converged") &&
+      concurrentUpgradeResult.detail.includes(
+        "without restoring stale prior XML",
+      ) &&
+      concurrentUpgradeCreates === 1 &&
+      concurrentUpgradeXml !== v2Definition &&
+      !concurrentUpgradeInvocations.some(([command]) => command === "/Delete"),
+    "When two owned-drift upgrades race, a failed creator that reads the exact current-v4 winner must accept convergence without restoring stale prior XML.",
+  );
+
+  let missingUpgradeXml = v2Definition;
+  let missingUpgradeCreates = 0;
+  const missingUpgradeInvocations = [];
+  const missingUpgradeRunner = async (args) => {
+    missingUpgradeInvocations.push([...args]);
+    if (args[0] === "/Query") {
+      return missingUpgradeXml
+        ? { code: 0, stdout: missingUpgradeXml, stderr: "" }
+        : {
+            code: 1,
+            stdout: "",
+            stderr: "ERROR: The system cannot find the file specified.",
+          };
+    }
+    if (args[0] === "/Create") {
+      missingUpgradeCreates += 1;
+      missingUpgradeXml = "";
+      return {
+        code: 1,
+        stdout: "",
+        stderr: "fixture failed upgrade left task absent",
+      };
+    }
+    throw new Error(
+      `Unexpected missing-upgrade fixture call: ${args.join(" ")}`,
+    );
+  };
+  const missingUpgradeBackend = createWindowsTaskSchedulerBackend(
+    missingUpgradeRunner,
+    options,
+  );
+  const missingUpgradeResult = await missingUpgradeBackend.install(request);
+  assert(
+    missingUpgradeResult.ok === false &&
+      missingUpgradeResult.status === "not-installed" &&
+      missingUpgradeResult.detail.includes("disappeared") &&
+      missingUpgradeResult.detail.includes("did not restore") &&
+      missingUpgradeCreates === 1 &&
+      missingUpgradeXml === "" &&
+      !missingUpgradeInvocations.some(([command]) => command === "/Delete"),
+    "A nonzero owned-upgrade create followed by verified absence must fail closed without claiming rollback authority or recreating stale prior XML.",
   );
 
   const unchangedPriorXml = v2Definition;

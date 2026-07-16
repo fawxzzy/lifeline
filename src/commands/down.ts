@@ -4,7 +4,12 @@ import {
   stopProcess,
   waitForPortToClear,
 } from "../core/process-manager.js";
-import { getAppState, upsertAppState } from "../core/state-store.js";
+import {
+  type RuntimeAppState,
+  getAppState,
+  updateAppStateIfSupervisorMatches,
+  upsertAppState,
+} from "../core/state-store.js";
 
 const PORT_CLEAR_TIMEOUT_MS = 12_000;
 
@@ -15,19 +20,25 @@ export interface DownCommandOptions {
 async function writeDownStateIfStillOwned(
   appName: string,
   expectedSupervisorPid: number | undefined,
-  nextState: NonNullable<Awaited<ReturnType<typeof getAppState>>>,
+  observedState: RuntimeAppState,
+  transition: (currentState: RuntimeAppState) => RuntimeAppState,
 ): Promise<boolean> {
   if (expectedSupervisorPid !== undefined) {
-    const currentState = await getAppState(appName);
-    if (currentState?.supervisorPid !== expectedSupervisorPid) {
+    const result = await updateAppStateIfSupervisorMatches(
+      appName,
+      expectedSupervisorPid,
+      transition,
+    );
+    if (!result.updated) {
       console.error(
-        `App ${appName} supervisor identity changed from ${expectedSupervisorPid} to ${currentState?.supervisorPid ?? "missing"}; refusing to overwrite replacement state.`,
+        `App ${appName} supervisor identity changed from ${expectedSupervisorPid} to ${result.state?.supervisorPid ?? "missing"}; refusing to overwrite replacement state.`,
       );
       return false;
     }
+    return true;
   }
 
-  await upsertAppState(nextState);
+  await upsertAppState(transition(observedState));
   return true;
 }
 
@@ -88,8 +99,9 @@ export async function runDownCommand(
     const wroteBlockedState = await writeDownStateIfStillOwned(
       appName,
       options.expectedSupervisorPid,
-      {
-        ...state,
+      state,
+      (currentState) => ({
+        ...currentState,
         childPid: undefined,
         wrapperPid: undefined,
         listenerPid: undefined,
@@ -97,7 +109,7 @@ export async function runDownCommand(
         blockedReason,
         lastKnownStatus: "blocked",
         lastExitAt: new Date().toISOString(),
-      },
+      }),
     );
     if (!wroteBlockedState) {
       return 1;
@@ -112,8 +124,9 @@ export async function runDownCommand(
   const wroteStoppedState = await writeDownStateIfStillOwned(
     appName,
     options.expectedSupervisorPid,
-    {
-      ...state,
+    state,
+    (currentState) => ({
+      ...currentState,
       childPid: undefined,
       wrapperPid: undefined,
       listenerPid: undefined,
@@ -122,7 +135,7 @@ export async function runDownCommand(
       crashLoopDetected: false,
       lastKnownStatus: "stopped",
       lastExitAt: new Date().toISOString(),
-    },
+    }),
   );
   if (!wroteStoppedState) {
     return 1;

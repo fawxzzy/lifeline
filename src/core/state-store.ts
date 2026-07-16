@@ -1,9 +1,14 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { getLifelineStateDirectory } from "./lifeline-root.js";
 
-export type RuntimeStatus = "running" | "stopped" | "unhealthy" | "crash-loop" | "blocked";
+export type RuntimeStatus =
+  | "running"
+  | "stopped"
+  | "unhealthy"
+  | "crash-loop"
+  | "blocked";
 export type RestartPolicy = "on-failure" | "never";
 
 export interface RuntimeAppState {
@@ -34,6 +39,30 @@ export interface RuntimeStateFile {
   apps: Record<string, RuntimeAppState>;
 }
 
+export type ConditionalAppStateUpdateResult =
+  | { updated: true; state: RuntimeAppState }
+  | {
+      updated: false;
+      reason: "missing" | "supervisor-mismatch";
+      state?: RuntimeAppState;
+    };
+
+interface StateMutationLeaseRecord {
+  version: 1;
+  ownerId: string;
+  pid: number;
+  startedAt: string;
+}
+
+interface StateMutationLease {
+  directory: string;
+  metadataPath: string;
+  ownerId: string;
+}
+
+const STATE_MUTATION_LEASE_TIMEOUT_MS = 10_000;
+const STATE_MUTATION_LEASE_POLL_MS = 25;
+
 async function ensureStateDirectory(stateDirectory: string): Promise<void> {
   await mkdir(stateDirectory, { recursive: true });
 }
@@ -57,7 +86,10 @@ function isOptionalString(value: unknown): value is string | undefined {
 }
 
 function isOptionalInteger(value: unknown): value is number | undefined {
-  return value === undefined || (typeof value === "number" && Number.isInteger(value));
+  return (
+    value === undefined ||
+    (typeof value === "number" && Number.isInteger(value))
+  );
 }
 
 function isValidRuntimeAppState(value: unknown): value is RuntimeAppState {
@@ -114,7 +146,7 @@ export async function getStatePath(): Promise<string> {
   return path.join(getLifelineStateDirectory(), "state.json");
 }
 
-export async function readState(): Promise<RuntimeStateFile> {
+async function readStateUnlocked(): Promise<RuntimeStateFile> {
   const raw = await readFile(await getStatePath(), "utf8").catch(() => "");
   if (!raw) {
     return { apps: {} };
@@ -130,7 +162,155 @@ export async function readState(): Promise<RuntimeStateFile> {
   return { apps: sanitizeApps(parsed.apps) };
 }
 
-export async function writeState(state: RuntimeStateFile): Promise<void> {
+function filesystemErrorCode(error: unknown): string | undefined {
+  return error instanceof Error && "code" in error
+    ? String((error as Error & { code?: unknown }).code)
+    : undefined;
+}
+
+function stateMutationOwnerId(): string {
+  return `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function parseStateMutationLeaseRecord(
+  value: string,
+): StateMutationLeaseRecord | undefined {
+  try {
+    const parsed = JSON.parse(value) as Partial<StateMutationLeaseRecord>;
+    return parsed.version === 1 &&
+      typeof parsed.ownerId === "string" &&
+      typeof parsed.pid === "number" &&
+      typeof parsed.startedAt === "string"
+      ? (parsed as StateMutationLeaseRecord)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (pid === process.pid) {
+    return true;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function waitForStateMutationLease(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, STATE_MUTATION_LEASE_POLL_MS);
+  });
+}
+
+async function acquireStateMutationLease(): Promise<StateMutationLease> {
+  const stateDirectory = getLifelineStateDirectory();
+  await ensureStateDirectory(stateDirectory);
+  const directory = path.join(stateDirectory, "state.json.lock");
+  const metadataPath = path.join(directory, "owner.json");
+  const ownerId = stateMutationOwnerId();
+  const deadline = Date.now() + STATE_MUTATION_LEASE_TIMEOUT_MS;
+
+  while (Date.now() <= deadline) {
+    try {
+      await mkdir(directory);
+      const record: StateMutationLeaseRecord = {
+        version: 1,
+        ownerId,
+        pid: process.pid,
+        startedAt: new Date().toISOString(),
+      };
+      try {
+        await writeFile(
+          metadataPath,
+          `${JSON.stringify(record, null, 2)}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        await rm(directory, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
+      return { directory, metadataPath, ownerId };
+    } catch (error) {
+      if (filesystemErrorCode(error) !== "EEXIST") {
+        throw error;
+      }
+    }
+
+    const [recordText, leaseStats] = await Promise.all([
+      readFile(metadataPath, "utf8").catch(() => ""),
+      stat(directory).catch(() => undefined),
+    ]);
+    const record = parseStateMutationLeaseRecord(recordText);
+    const uninitializedLeaseExpired =
+      !record &&
+      leaseStats !== undefined &&
+      Date.now() - leaseStats.mtimeMs >= STATE_MUTATION_LEASE_TIMEOUT_MS;
+    if ((record && !isProcessAlive(record.pid)) || uninitializedLeaseExpired) {
+      const staleDirectory = `${directory}.stale-${ownerId}`;
+      try {
+        await rename(directory, staleDirectory);
+        await rm(staleDirectory, { recursive: true, force: true });
+        continue;
+      } catch (error) {
+        if (
+          ![
+            "ENOENT",
+            "EEXIST",
+            "ENOTEMPTY",
+            "EPERM",
+            "EACCES",
+            "EBUSY",
+          ].includes(filesystemErrorCode(error) ?? "")
+        ) {
+          throw error;
+        }
+      }
+    }
+
+    await waitForStateMutationLease();
+  }
+
+  throw new Error(
+    `Timed out waiting for the runtime state mutation lease at ${directory}; the active lease was preserved for fail-closed recovery.`,
+  );
+}
+
+async function releaseStateMutationLease(
+  lease: StateMutationLease,
+): Promise<void> {
+  const record = parseStateMutationLeaseRecord(
+    await readFile(lease.metadataPath, "utf8").catch(() => ""),
+  );
+  if (record?.ownerId !== lease.ownerId) {
+    return;
+  }
+  const releaseDirectory = `${lease.directory}.release-${lease.ownerId}`;
+  try {
+    await rename(lease.directory, releaseDirectory);
+    await rm(releaseDirectory, { recursive: true, force: true });
+  } catch (error) {
+    if (filesystemErrorCode(error) !== "ENOENT") {
+      throw error;
+    }
+  }
+}
+
+async function withStateMutationLease<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lease = await acquireStateMutationLease();
+  try {
+    return await operation();
+  } finally {
+    await releaseStateMutationLease(lease);
+  }
+}
+
+async function writeStateUnlocked(state: RuntimeStateFile): Promise<void> {
   const stateDirectory = getLifelineStateDirectory();
   const statePath = path.join(stateDirectory, "state.json");
   await ensureStateDirectory(stateDirectory);
@@ -156,6 +336,14 @@ export async function writeState(state: RuntimeStateFile): Promise<void> {
   }
 }
 
+export async function readState(): Promise<RuntimeStateFile> {
+  return readStateUnlocked();
+}
+
+export async function writeState(state: RuntimeStateFile): Promise<void> {
+  await withStateMutationLease(async () => writeStateUnlocked(state));
+}
+
 export async function getAppState(
   appName: string,
 ): Promise<RuntimeAppState | undefined> {
@@ -164,13 +352,53 @@ export async function getAppState(
 }
 
 export async function upsertAppState(appState: RuntimeAppState): Promise<void> {
-  const state = await readState();
-  state.apps[appState.name] = appState;
-  await writeState(state);
+  await withStateMutationLease(async () => {
+    const state = await readStateUnlocked();
+    state.apps[appState.name] = appState;
+    await writeStateUnlocked(state);
+  });
+}
+
+export async function updateAppStateIfSupervisorMatches(
+  appName: string,
+  expectedSupervisorPid: number,
+  update: (
+    currentState: RuntimeAppState,
+  ) => RuntimeAppState | Promise<RuntimeAppState>,
+): Promise<ConditionalAppStateUpdateResult> {
+  return withStateMutationLease(async () => {
+    const state = await readStateUnlocked();
+    const currentState = state.apps[appName];
+    if (!currentState) {
+      return { updated: false, reason: "missing" };
+    }
+    if (currentState.supervisorPid !== expectedSupervisorPid) {
+      return {
+        updated: false,
+        reason: "supervisor-mismatch",
+        state: currentState,
+      };
+    }
+
+    const nextState = await update(currentState);
+    if (
+      nextState.name !== appName ||
+      nextState.supervisorPid !== expectedSupervisorPid
+    ) {
+      throw new Error(
+        `Conditional runtime state update for ${appName} must preserve app and supervisor identity ${expectedSupervisorPid}.`,
+      );
+    }
+    state.apps[appName] = nextState;
+    await writeStateUnlocked(state);
+    return { updated: true, state: nextState };
+  });
 }
 
 export async function removeAppState(appName: string): Promise<void> {
-  const state = await readState();
-  delete state.apps[appName];
-  await writeState(state);
+  await withStateMutationLease(async () => {
+    const state = await readStateUnlocked();
+    delete state.apps[appName];
+    await writeStateUnlocked(state);
+  });
 }

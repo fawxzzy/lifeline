@@ -1311,6 +1311,7 @@ async function restorePriorOwnedTaskAfterFailedReadback(
 async function reconcileFailedTaskCreation(
   runner: WindowsSchedulerRunner,
   inspection: DetailedTaskInspection,
+  options: { restoreMissingPriorDefinition: boolean },
 ): Promise<{
   accepted: boolean;
   verified: boolean;
@@ -1335,6 +1336,15 @@ async function reconcileFailedTaskCreation(
   ]);
 
   if (inspection.state === "owned-drift" && inspection.existingXml) {
+    if (readback.code === 0 && matchesExpectedTask(readback.stdout, expected)) {
+      return {
+        accepted: true,
+        verified: true,
+        status: "installed",
+        detail:
+          "The exact current-v4 task is installed and verified; the owned-drift upgrade converged with a concurrent registration without restoring stale prior XML.",
+      };
+    }
     if (
       readback.code === 0 &&
       normalizeTaskXmlForComparison(readback.stdout) ===
@@ -1348,18 +1358,39 @@ async function reconcileFailedTaskCreation(
           "The current-v4 enable failed; the exact prior Lifeline-owned definition remains installed, unchanged, and verified.",
       };
     }
-    const restoration = await restorePriorOwnedTaskAfterFailedReadback(
-      runner,
-      expected.launcher,
-      inspection.existingXml,
-    );
+    if (readback.code !== 0 && isTaskMissing(readback)) {
+      if (!options.restoreMissingPriorDefinition) {
+        return {
+          accepted: false,
+          verified: true,
+          status: "not-installed",
+          detail:
+            "FAIL-CLOSED BLOCKER: the prior Lifeline-owned definition disappeared after the failed owned-drift create; absence was verified, but this invocation did not receive a successful scheduler mutation and therefore did not restore or overwrite the observed state.",
+        };
+      }
+      const restoration = await restorePriorOwnedTaskAfterFailedReadback(
+        runner,
+        expected.launcher,
+        inspection.existingXml,
+      );
+      return {
+        accepted: false,
+        verified: restoration.verified,
+        status: "installed",
+        detail: restoration.verified
+          ? `The current-v4 enable failed after its successful scheduler mutation; ${restoration.detail}`
+          : restoration.detail,
+      };
+    }
     return {
       accepted: false,
-      verified: restoration.verified,
+      verified: false,
       status: "installed",
-      detail: restoration.verified
-        ? `The current-v4 enable failed; ${restoration.detail}`
-        : restoration.detail,
+      detail: `FAIL-CLOSED BLOCKER: the failed owned-drift create read back a different, foreign, or ambiguous task definition. The observed definition was preserved because this invocation cannot prove authority to overwrite it with stale prior XML: ${
+        readback.stderr ||
+        readback.stdout ||
+        "scheduler query did not prove the expected or exact prior definition"
+      }`,
     };
   }
 
@@ -1491,6 +1522,7 @@ export function createWindowsTaskSchedulerBackend(
         const reconciliation = await reconcileFailedTaskCreation(
           runner,
           inspection,
+          { restoreMissingPriorDefinition: false },
         );
         if (reconciliation.accepted) {
           return {
@@ -1519,7 +1551,9 @@ export function createWindowsTaskSchedulerBackend(
 
       const readback = await inspectTaskDetailed(runner, options);
       if (readback.state !== "installed" || !readback.expected) {
-        const rollback = await reconcileFailedTaskCreation(runner, inspection);
+        const rollback = await reconcileFailedTaskCreation(runner, inspection, {
+          restoreMissingPriorDefinition: true,
+        });
         if (rollback.accepted) {
           return {
             status: rollback.status,
