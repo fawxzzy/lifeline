@@ -29,6 +29,27 @@ const TASK_DEFINITION_VERSION = 4;
 const LAUNCHER_LEASE_TIMEOUT_MS = 30_000;
 const LAUNCHER_LEASE_POLL_MS = 50;
 
+export function quoteWindowsTaskArgument(value: string): string {
+  let quoted = '"';
+  let pendingBackslashes = 0;
+  for (const character of value) {
+    if (character === "\\") {
+      pendingBackslashes += 1;
+      continue;
+    }
+    if (character === '"') {
+      quoted += "\\".repeat(pendingBackslashes * 2 + 1);
+      quoted += character;
+    } else {
+      quoted += "\\".repeat(pendingBackslashes);
+      quoted += character;
+    }
+    pendingBackslashes = 0;
+  }
+  quoted += "\\".repeat(pendingBackslashes * 2);
+  return `${quoted}"`;
+}
+
 interface SchedulerCommandResult {
   code: number;
   stdout: string;
@@ -944,7 +965,7 @@ async function buildExpectedTaskDefinition(
   }
 
   const description = `Managed by Lifeline Windows startup v${TASK_DEFINITION_VERSION}. Root: ${rootDirectory}`;
-  const argumentsValue = `"${launcher.launcherEntrypoint}" --root "${rootDirectory}" restore --startup`;
+  const argumentsValue = `${quoteWindowsTaskArgument(launcher.launcherEntrypoint)} --root ${quoteWindowsTaskArgument(rootDirectory)} restore --startup`;
   const expectedWithoutXml = {
     rootDirectory,
     identity,

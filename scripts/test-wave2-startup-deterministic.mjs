@@ -874,11 +874,24 @@ async function verifyWindowsTaskSchedulerBackendDeterministicBehavior() {
 
   const { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } =
     await import("node:fs/promises");
-  const { createWindowsTaskSchedulerBackend } = await import(
-    new URL(
-      "../dist/core/startup-backends/windows-task-scheduler.js",
-      import.meta.url,
-    )
+  const { createWindowsTaskSchedulerBackend, quoteWindowsTaskArgument } =
+    await import(
+      new URL(
+        "../dist/core/startup-backends/windows-task-scheduler.js",
+        import.meta.url,
+      )
+    );
+
+  const driveRoot = `C:${"\\"}`;
+  const uncRoot = `\\\\server\\share${"\\"}`;
+  assert(
+    quoteWindowsTaskArgument(driveRoot) === `"C:${"\\".repeat(2)}"` &&
+      quoteWindowsTaskArgument(uncRoot) ===
+        `"${uncRoot.slice(0, -1)}${"\\".repeat(2)}"` &&
+      quoteWindowsTaskArgument('before"after') === `"before\\"after"` &&
+      quoteWindowsTaskArgument("C:\\ATLAS runtime\\root") ===
+        `"C:\\ATLAS runtime\\root"`,
+    "Windows Task Scheduler arguments must double trailing backslashes before the closing quote, escape embedded quotes, and preserve ordinary path separators.",
   );
 
   const tempRoot = await mkdtemp(
